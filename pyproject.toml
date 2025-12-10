@@ -1,0 +1,51 @@
+[project]
+name = "lego-assembly"
+version = "1.0.0"
+description = "LEGO Assembly System - Phase 1: Instruction Manual Processing & 3D Plan Generation"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [
+    {name = "LEGO Assembly Team"}
+]
+
+dependencies = [
+    "pdf2image>=1.16.3",
+    "PyMuPDF>=1.23.8",
+    "Pillow>=10.1.0",
+    "numpy>=1.24.3",
+    "scipy>=1.11.4",
+    "requests>=2.31.0",
+    "openai>=1.6.1",
+    "dashscope>=1.14.1",
+    "python-dotenv>=1.0.0",
+    "pydantic>=2.5.0",
+    "jsonschema>=4.20.0",
+    "diskcache>=5.6.3",
+    "loguru>=0.7.2",
+    "opencv-python>=4.8.1.78",
+    "trimesh>=4.0.10",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+]
+
+[project.scripts]
+lego-assembly = "main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.black]
+line-length = 100
+target-version = ['py38']
+
+[tool.ruff]
+line-length = 100
+target-version = "py38"
+
