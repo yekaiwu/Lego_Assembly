@@ -5,7 +5,13 @@ Get started with the LEGO Assembly System in 5 minutes.
 ## 1. Install Dependencies
 
 ```bash
+# Install uv (recommended - faster)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
 # Install Python packages
+uv sync
+
+# OR use pip if you prefer
 pip install -r requirements.txt
 
 # Install Poppler (for PDF processing)
@@ -33,7 +39,13 @@ Get your key at: https://dashscope.console.aliyun.com/
 ## 3. Run Your First Example
 
 ```bash
-# Process a LEGO manual PDF
+# Interactive mode - prompts for URL
+python main.py
+
+# Or provide URL directly
+python main.py https://www.lego.com/cdn/product-assets/product.bi.core.pdf/6521147.pdf
+
+# Or use local PDF file
 python main.py /path/to/your/lego_manual.pdf
 
 # Or use test images directory

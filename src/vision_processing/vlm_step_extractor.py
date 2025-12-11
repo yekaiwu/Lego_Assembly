@@ -34,7 +34,8 @@ class VLMStepExtractor:
         self, 
         image_paths: List[str], 
         step_number: Optional[int] = None,
-        use_primary: bool = True
+        use_primary: bool = True,
+        cache_context: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Extract structured information from a single step.
@@ -43,20 +44,22 @@ class VLMStepExtractor:
             image_paths: List of paths to step images
             step_number: Optional step number
             use_primary: Whether to use primary VLM (True) or try all (False)
+            cache_context: Optional context to differentiate cache entries between manuals
         
         Returns:
             Extracted step information
         """
         if use_primary:
-            return self._extract_with_vlm(self.primary_vlm, image_paths, step_number)
+            return self._extract_with_vlm(self.primary_vlm, image_paths, step_number, cache_context)
         else:
-            return self._extract_with_fallback(image_paths, step_number)
+            return self._extract_with_fallback(image_paths, step_number, cache_context)
     
     def _extract_with_vlm(
         self, 
         vlm_name: str, 
         image_paths: List[str], 
-        step_number: Optional[int]
+        step_number: Optional[int],
+        cache_context: Optional[str] = None
     ) -> Dict[str, Any]:
         """Extract using a specific VLM."""
         client = self.clients.get(vlm_name)
@@ -67,7 +70,17 @@ class VLMStepExtractor:
         logger.info(f"Extracting step info using {vlm_name}")
         
         try:
-            result = client.extract_step_info(image_paths, step_number)
+            # Pass cache_context to the client if supported
+            if hasattr(client, 'extract_step_info'):
+                # Check if method accepts cache_context parameter
+                import inspect
+                sig = inspect.signature(client.extract_step_info)
+                if 'cache_context' in sig.parameters:
+                    result = client.extract_step_info(image_paths, step_number, cache_context=cache_context)
+                else:
+                    result = client.extract_step_info(image_paths, step_number)
+            else:
+                result = client.extract_step_info(image_paths, step_number)
             
             # Validate result
             if self._validate_extraction(result):
@@ -84,7 +97,8 @@ class VLMStepExtractor:
     def _extract_with_fallback(
         self, 
         image_paths: List[str], 
-        step_number: Optional[int]
+        step_number: Optional[int],
+        cache_context: Optional[str] = None
     ) -> Dict[str, Any]:
         """Extract with fallback logic through multiple VLMs."""
         vlm_sequence = [self.primary_vlm, self.secondary_vlm, self.fallback_vlm]
@@ -93,7 +107,7 @@ class VLMStepExtractor:
             logger.info(f"Trying VLM: {vlm_name}")
             
             try:
-                result = self._extract_with_vlm(vlm_name, image_paths, step_number)
+                result = self._extract_with_vlm(vlm_name, image_paths, step_number, cache_context)
                 
                 # If extraction succeeded, return
                 if "error" not in result:
@@ -131,7 +145,8 @@ class VLMStepExtractor:
     def batch_extract(
         self, 
         step_images: List[List[str]], 
-        use_primary: bool = True
+        use_primary: bool = True,
+        cache_context: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
         Extract information from multiple steps in batch.
@@ -139,6 +154,7 @@ class VLMStepExtractor:
         Args:
             step_images: List of step image lists
             use_primary: Whether to use primary VLM only
+            cache_context: Optional context to differentiate cache entries between manuals
         
         Returns:
             List of extracted step information
@@ -148,7 +164,7 @@ class VLMStepExtractor:
         results = []
         for i, image_paths in enumerate(step_images):
             logger.info(f"Processing step {i + 1}/{len(step_images)}")
-            result = self.extract_step(image_paths, step_number=i + 1, use_primary=use_primary)
+            result = self.extract_step(image_paths, step_number=i + 1, use_primary=use_primary, cache_context=cache_context)
             results.append(result)
         
         logger.info(f"Batch extraction complete. Extracted {len(results)} steps")

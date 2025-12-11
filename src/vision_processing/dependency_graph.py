@@ -42,12 +42,24 @@ class DependencyGraph:
         
         # Add all steps to graph
         for i, step_info in enumerate(extracted_steps):
-            step_number = step_info.get("step_number", i + 1)
+            # Use index-based numbering if step_number is None or invalid
+            raw_step_number = step_info.get("step_number")
+            if raw_step_number is None or not isinstance(raw_step_number, int):
+                step_number = i + 1
+                # Update the step_info with the corrected step number
+                step_info["step_number"] = step_number
+            else:
+                step_number = raw_step_number
+            
             self.add_step(step_number, step_info)
         
         # Infer dependencies
         for i, step_info in enumerate(extracted_steps):
-            step_number = step_info.get("step_number", i + 1)
+            raw_step_number = step_info.get("step_number")
+            if raw_step_number is None or not isinstance(raw_step_number, int):
+                step_number = i + 1
+            else:
+                step_number = raw_step_number
             
             # Method 1: Explicit dependencies from VLM extraction
             explicit_deps = step_info.get("dependencies", "")

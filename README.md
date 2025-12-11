@@ -60,8 +60,9 @@ Lego_Assembly/
 
 ### Prerequisites
 
-- Python 3.8+
+- Python 3.9+
 - Poppler (for PDF processing)
+- uv (recommended) or pip
 
 **Install Poppler:**
 ```bash
@@ -74,6 +75,15 @@ sudo apt-get install poppler-utils
 # Windows: Download from https://github.com/oschwartz10612/poppler-windows
 ```
 
+**Install uv (recommended):**
+```bash
+# macOS/Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Or with pip
+pip install uv
+```
+
 ### Setup
 
 1. **Clone and Navigate:**
@@ -82,6 +92,13 @@ cd /path/to/CS480/Lego_Assembly
 ```
 
 2. **Install Dependencies:**
+
+**Option A: Using uv (recommended - faster):**
+```bash
+uv sync
+```
+
+**Option B: Using pip:**
 ```bash
 pip install -r requirements.txt
 ```
@@ -109,27 +126,45 @@ db.fetch_colors_from_api()  # Cache LEGO colors locally
 
 ### Command Line Interface
 
-**Basic Usage:**
+**Interactive Mode (Prompts for URL):**
+```bash
+python main.py
+# You'll be prompted to enter a URL like:
+# https://www.lego.com/cdn/product-assets/product.bi.core.pdf/6521147.pdf
+```
+
+**Direct URL Input:**
+```bash
+python main.py https://www.lego.com/cdn/product-assets/product.bi.core.pdf/6521147.pdf
+```
+
+**Local File:**
 ```bash
 python main.py /path/to/lego_manual.pdf
 ```
 
 **With Custom Output Directory:**
 ```bash
-python main.py /path/to/manual.pdf -o ./my_output
+python main.py https://example.com/manual.pdf -o ./my_output
 ```
 
 **With Fallback VLMs:**
 ```bash
-python main.py /path/to/manual.pdf --use-fallback
+python main.py https://example.com/manual.pdf --use-fallback
+```
+
+**Disable Console Output (files only):**
+```bash
+python main.py https://example.com/manual.pdf --no-display
 ```
 
 **Full Options:**
 ```bash
-python main.py /path/to/manual.pdf \
+python main.py https://example.com/manual.pdf \
   -o ./output \
   --assembly-id my_lego_set \
   --use-fallback \
+  --no-display \
   --log-level DEBUG
 ```
 

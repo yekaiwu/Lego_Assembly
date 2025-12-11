@@ -48,7 +48,7 @@ class SystemConfig(BaseModel):
     api: APIConfig = Field(default_factory=APIConfig)
     models: ModelConfig = Field(default_factory=ModelConfig)
     paths: PathConfig = Field(default_factory=PathConfig)
-    cache_enabled: bool = Field(default=True)
+    cache_enabled: bool = Field(default=False)  # Disabled by default to ensure fresh processing
 
 # Global config instance
 config = SystemConfig()

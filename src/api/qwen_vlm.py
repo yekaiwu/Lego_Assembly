@@ -5,6 +5,8 @@ Primary VLM for vision-language tasks.
 
 import json
 import time
+import base64
+from pathlib import Path
 from typing import List, Dict, Any, Optional
 import requests
 from loguru import logger
@@ -30,7 +32,8 @@ class QwenVLMClient:
         self, 
         image_paths: List[str], 
         step_number: Optional[int] = None,
-        use_json_mode: bool = True
+        use_json_mode: bool = True,
+        cache_context: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Extract structured information from a LEGO instruction step.
@@ -39,12 +42,14 @@ class QwenVLMClient:
             image_paths: List of paths to step images
             step_number: Optional step number for context
             use_json_mode: Whether to request JSON formatted output
+            cache_context: Optional context string to differentiate cache entries (e.g., manual ID)
         
         Returns:
             Extracted step information including parts, actions, spatial relationships
         """
-        # Check cache first
-        cache_key = f"qwen-vl-max:{','.join(image_paths)}:{step_number}"
+        # Check cache first - include cache_context to prevent collisions across different manuals
+        cache_suffix = f":{cache_context}" if cache_context else ""
+        cache_key = f"qwen-vl-max:{','.join(image_paths)}:{step_number}{cache_suffix}"
         cached = self.cache.get("qwen-vl-max", cache_key, image_paths)
         if cached:
             return cached
@@ -55,7 +60,13 @@ class QwenVLMClient:
         # Prepare multi-modal content
         content = [{"text": prompt}]
         for img_path in image_paths:
-            content.append({"image": img_path})
+            # Convert local file path to base64 if it's not a URL
+            if img_path.startswith('http://') or img_path.startswith('https://'):
+                content.append({"image": img_path})
+            else:
+                # Encode local file as base64
+                image_data = self._encode_image_to_base64(img_path)
+                content.append({"image": image_data})
         
         # Make API call with retry logic
         response = self._call_api_with_retry(content, use_json_mode)
@@ -191,16 +202,67 @@ Be detailed and precise."""
             message = choices[0].get("message", {})
             content = message.get("content", "")
             
+            # Handle different content formats
+            if isinstance(content, list):
+                # Content is a list of objects (e.g., [{"text": "..."}])
+                text_content = ""
+                for item in content:
+                    if isinstance(item, dict) and "text" in item:
+                        text_content += item["text"]
+                content = text_content
+            
             if use_json_mode:
                 # Parse JSON response
-                return json.loads(content)
+                if isinstance(content, str):
+                    return json.loads(content)
+                else:
+                    # Already a dict/list
+                    return content if isinstance(content, dict) else {"raw_content": content}
             else:
                 # Return as-is for text responses
                 return {"raw_text": content}
         
         except (json.JSONDecodeError, KeyError, ValueError) as e:
             logger.error(f"Failed to parse API response: {e}")
+            logger.debug(f"Response structure: {response}")
             return {"error": str(e), "raw_response": response}
+    
+    def _encode_image_to_base64(self, image_path: str) -> str:
+        """
+        Encode a local image file to base64 data URI.
+        
+        Args:
+            image_path: Path to local image file
+        
+        Returns:
+            Base64 data URI string
+        """
+        try:
+            path = Path(image_path)
+            
+            # Determine MIME type from extension
+            ext = path.suffix.lower()
+            mime_types = {
+                '.jpg': 'image/jpeg',
+                '.jpeg': 'image/jpeg',
+                '.png': 'image/png',
+                '.gif': 'image/gif',
+                '.webp': 'image/webp',
+                '.bmp': 'image/bmp'
+            }
+            mime_type = mime_types.get(ext, 'image/jpeg')
+            
+            # Read and encode image
+            with open(image_path, 'rb') as f:
+                image_bytes = f.read()
+                base64_str = base64.b64encode(image_bytes).decode('utf-8')
+            
+            # Return as data URI
+            return f"data:{mime_type};base64,{base64_str}"
+        
+        except Exception as e:
+            logger.error(f"Failed to encode image {image_path}: {e}")
+            raise
     
     def batch_extract(self, image_batches: List[List[str]]) -> List[Dict[str, Any]]:
         """Extract information from multiple steps in batch."""
