@@ -12,6 +12,7 @@ from typing import Optional, Dict, Any
 from loguru import logger
 
 from src.vision_processing import ManualInputHandler, VLMStepExtractor, DependencyGraph
+from src.vision_processing.document_analyzer import DocumentAnalyzer
 from src.plan_generation import PlanStructureGenerator, GraphBuilder
 from src.utils import get_config, URLHandler
 
@@ -146,77 +147,128 @@ def main(
     
     # Step 1: Manual Input Processing
     if not checkpoint.is_step_complete("page_extraction"):
-        logger.info("Step 1/6: Processing manual input...")
+        logger.info("Step 1/7: Processing manual input...")
         manual_handler = ManualInputHandler(output_dir=output_dir / "temp_pages")
-        
+
         page_paths = manual_handler.process_manual(input_path)
         logger.info(f"Extracted {len(page_paths)} pages")
-        
-        # Detect step boundaries
-        step_groups = manual_handler.detect_step_boundaries(page_paths)
-        logger.info(f"Detected {len(step_groups)} steps")
-        logger.info("")
-        
-        checkpoint.save("page_extraction", {"page_count": len(page_paths), "step_count": len(step_groups)})
+
+        checkpoint.save("page_extraction", {"page_count": len(page_paths)})
     else:
-        logger.info("Step 1/6: ✓ Page extraction already complete (skipping)")
-        # Load step groups from checkpoint or re-detect
+        logger.info("Step 1/7: ✓ Page extraction already complete (skipping)")
+        # Load page paths from checkpoint
         manual_handler = ManualInputHandler(output_dir=output_dir / "temp_pages")
-        page_paths = list((output_dir / "temp_pages").glob("page_*.png"))
-        step_groups = manual_handler.detect_step_boundaries(page_paths)
+        page_paths = sorted(list((output_dir / "temp_pages").glob("page_*.png")))
+
+    # Step 2 (NEW): Phase 0 - Document Understanding
+    if not checkpoint.is_step_complete("document_analysis"):
+        logger.info("Step 2/7: Analyzing document structure (Phase 0)...")
+
+        # Get VLM client for document analysis (use Gemini for consistency)
+        from src.api.gemini_api import GeminiVisionClient
+        vlm_client = GeminiVisionClient()
+
+        doc_analyzer = DocumentAnalyzer(vlm_client)
+        doc_metadata = doc_analyzer.analyze_pdf(page_paths)
+
+        logger.info(f"Identified: {doc_metadata.main_build}")
+        logger.info(f"Instruction pages: {sum(1 for c in doc_metadata.page_classification.values() if c == 'instruction')} of {doc_metadata.total_pages}")
+        logger.info(f"Estimated steps: {doc_metadata.total_steps}")
+
+        # Get user confirmation
+        if not doc_analyzer.get_user_confirmation(doc_metadata):
+            logger.info("User cancelled. Exiting.")
+            return
+
+        # Filter to only relevant pages
+        relevant_page_paths = doc_analyzer.extract_relevant_pages(page_paths, doc_metadata)
+
+        logger.info(f"Filtered: {len(page_paths)} → {len(relevant_page_paths)} instruction pages")
+
+        # Detect step boundaries on filtered pages
+        step_groups = manual_handler.detect_step_boundaries(relevant_page_paths)
+        logger.info(f"Detected {len(step_groups)} assembly steps")
+        logger.info("")
+
+        checkpoint.save("document_analysis", {
+            "metadata": doc_metadata.to_dict(),
+            "relevant_page_count": len(relevant_page_paths),
+            "step_count": len(step_groups)
+        })
+    else:
+        logger.info("Step 2/7: ✓ Document analysis already complete (skipping)")
+        # Load from checkpoint
+        checkpoint_data = checkpoint.load()
+        from src.vision_processing.document_analyzer import DocumentMetadata
+        doc_metadata = DocumentMetadata.from_dict(checkpoint_data["metadata"])
+
+        # Re-extract relevant pages
+        from src.api.gemini_api import GeminiVisionClient
+        vlm_client = GeminiVisionClient()
+        doc_analyzer = DocumentAnalyzer(vlm_client)
+        relevant_page_paths = doc_analyzer.extract_relevant_pages(page_paths, doc_metadata)
+        step_groups = manual_handler.detect_step_boundaries(relevant_page_paths)
     
-    # Step 2: VLM-based Step Extraction
+    # Step 3 (ENHANCED): Phase 1 - Context-Aware Step Extraction
     if not checkpoint.is_step_complete("step_extraction"):
-        logger.info("Step 2/6: Extracting step information using VLM...")
+        logger.info("Step 3/7: Extracting step information using VLM (Phase 1 - Context-Aware)...")
         vlm_extractor = VLMStepExtractor()
-        
+
+        # NEW: Initialize context-aware memory
+        vlm_extractor.initialize_memory(
+            main_build=doc_metadata.main_build,
+            window_size=5,  # Remember last 5 steps
+            max_tokens=1_000_000  # Gemini 2.5 Flash has 1M context window
+        )
+        logger.info(f"Initialized context-aware extraction for: {doc_metadata.main_build}")
+
         # Use assembly_id as cache context to prevent cache collisions between different manuals
         extracted_steps = vlm_extractor.batch_extract(
-            step_groups, 
+            step_groups,
             use_primary=not use_fallback,
             cache_context=assembly_id,
             batch_size=batch_size
         )
-        logger.info(f"Extracted information from {len(extracted_steps)} steps")
-        
+        logger.info(f"Extracted information from {len(extracted_steps)} steps (with context)")
+
         # Save extracted data
         extracted_path = output_dir / f"{assembly_id}_extracted.json"
         with open(extracted_path, 'w', encoding='utf-8') as f:
             json.dump(extracted_steps, f, indent=2, ensure_ascii=False)
         logger.info(f"Saved extracted data to {extracted_path}")
         logger.info("")
-        
+
         checkpoint.save("step_extraction")
     else:
-        logger.info("Step 2/6: ✓ Step extraction already complete (skipping)")
+        logger.info("Step 3/7: ✓ Step extraction already complete (skipping)")
         # Load extracted data
         extracted_path = output_dir / f"{assembly_id}_extracted.json"
         with open(extracted_path, 'r', encoding='utf-8') as f:
             extracted_steps = json.load(f)
     
-    # Step 3: Dependency Graph Construction
+    # Step 4: Dependency Graph Construction
     if not checkpoint.is_step_complete("dependency_graph"):
-        logger.info("Step 3/6: Building dependency graph...")
+        logger.info("Step 4/7: Building dependency graph...")
         dep_graph = DependencyGraph()
         dep_graph.infer_dependencies(extracted_steps)
-        
+
         # Validate graph
         is_valid, errors = dep_graph.validate()
         if not is_valid:
             logger.warning(f"Dependency graph validation issues: {errors}")
         else:
             logger.info("Dependency graph is valid")
-        
+
         # Save dependency graph
         graph_path = output_dir / f"{assembly_id}_dependencies.json"
         with open(graph_path, 'w', encoding='utf-8') as f:
             json.dump(dep_graph.to_dict(), f, indent=2)
         logger.info(f"Saved dependency graph to {graph_path}")
         logger.info("")
-        
+
         checkpoint.save("dependency_graph")
     else:
-        logger.info("Step 3/6: ✓ Dependency graph already complete (skipping)")
+        logger.info("Step 4/7: ✓ Dependency graph already complete (skipping)")
         # Load dependency graph
         graph_path = output_dir / f"{assembly_id}_dependencies.json"
         with open(graph_path, 'r', encoding='utf-8') as f:
@@ -225,32 +277,33 @@ def main(
         dep_graph.nodes = dep_graph_dict.get('nodes', {})
         dep_graph.edges = dep_graph_dict.get('edges', [])
     
-    # Step 4: Hierarchical Assembly Graph Construction
+    # Step 5: Hierarchical Assembly Graph Construction (Phase 2 - Already Implemented)
     if not checkpoint.is_step_complete("hierarchical_graph"):
-        logger.info("Step 4/6: Building hierarchical assembly graph...")
+        logger.info("Step 5/7: Building hierarchical assembly graph (Phase 2)...")
         graph_builder = GraphBuilder()
-        
+
         hierarchical_graph = graph_builder.build_graph(
             extracted_steps=extracted_steps,
             assembly_id=assembly_id,
             image_dir=output_dir / "temp_pages"
         )
-        
+
         # Save hierarchical graph
         hierarchical_graph_path = output_dir / f"{assembly_id}_graph.json"
         graph_builder.save_graph(hierarchical_graph, hierarchical_graph_path)
-        
+
         logger.info(f"Hierarchical graph: {hierarchical_graph['metadata']['total_parts']} parts, "
                     f"{hierarchical_graph['metadata']['total_subassemblies']} subassemblies")
+        logger.info(f"  (Enhanced with context-aware extraction hints)")
         logger.info("")
-        
+
         checkpoint.save("hierarchical_graph")
     else:
-        logger.info("Step 4/6: ✓ Hierarchical graph already complete (skipping)")
+        logger.info("Step 5/7: ✓ Hierarchical graph already complete (skipping)")
     
-    # Step 5: 3D Plan Generation
+    # Step 6: 3D Plan Generation
     if not checkpoint.is_step_complete("plan_generation"):
-        logger.info("Step 5/6: Generating 3D assembly plan...")
+        logger.info("Step 6/7: Generating 3D assembly plan...")
         plan_generator = PlanStructureGenerator()
         
         metadata = {
@@ -293,17 +346,17 @@ def main(
             with open(text_plan_path, 'r', encoding='utf-8') as f:
                 print("\n" + f.read())
     else:
-        logger.info("Step 5/6: ✓ Plan generation already complete (skipping)")
+        logger.info("Step 6/7: ✓ Plan generation already complete (skipping)")
         json_plan_path = output_dir / f"{assembly_id}_plan.json"
         text_plan_path = output_dir / f"{assembly_id}_plan.txt"
         with open(json_plan_path, 'r', encoding='utf-8') as f:
             assembly_plan = json.load(f)
     
-    # Step 6: Vector Store Ingestion (Phase 2)
+    # Step 7: Vector Store Ingestion (Phase 2)
     if skip_ingestion:
-        logger.info("Step 6/6: ✗ Vector store ingestion skipped (--skip-ingestion)")
+        logger.info("Step 7/7: ✗ Vector store ingestion skipped (--skip-ingestion)")
     elif not checkpoint.is_step_complete("ingestion"):
-        logger.info("Step 6/6: Ingesting into vector store...")
+        logger.info("Step 7/7: Ingesting into vector store...")
         logger.info("  (This creates searchable embeddings with multimodal fusion)")
         
         try:
@@ -323,7 +376,7 @@ def main(
             logger.error(f"✗ Ingestion error: {e}")
             logger.warning("  Phase 1 outputs are still available, but manual won't be searchable")
     else:
-        logger.info("Step 6/6: ✓ Vector store ingestion already complete (skipping)")
+        logger.info("Step 7/7: ✓ Vector store ingestion already complete (skipping)")
     
     logger.info("")
     logger.info("=" * 80)

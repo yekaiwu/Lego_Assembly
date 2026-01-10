@@ -273,19 +273,85 @@ Be detailed and precise."""
             logger.debug(f"Response structure: {response}")
             return {"error": str(e), "raw_response": response}
     
+    def extract_step_info_with_context(
+        self,
+        image_paths: List[str],
+        step_number: Optional[int] = None,
+        custom_prompt: Optional[str] = None,
+        use_json_mode: bool = True,
+        cache_context: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Extract step info with custom context-aware prompt.
+
+        NEW: Accepts custom_prompt that includes context from build memory.
+
+        Args:
+            image_paths: List of paths to step images
+            step_number: Optional step number for context
+            custom_prompt: Custom prompt with context (overrides default)
+            use_json_mode: Whether to request JSON formatted output
+            cache_context: Optional context string to differentiate cache entries
+
+        Returns:
+            Extracted step information
+        """
+        # Check cache first
+        cache_suffix = f":{cache_context}" if cache_context else ""
+        cache_key = f"{self.model}:{','.join(image_paths)}:{step_number}{cache_suffix}"
+        cached = self.cache.get(self.model, cache_key, image_paths)
+        if cached:
+            return cached
+
+        # Use custom prompt if provided, otherwise build default
+        if custom_prompt:
+            prompt = custom_prompt
+        else:
+            prompt = self._build_extraction_prompt(step_number, use_json_mode)
+
+        # Prepare content with images
+        parts = []
+        parts.append({"text": prompt})
+
+        # Add images
+        for img_path in image_paths:
+            if img_path.startswith('http://') or img_path.startswith('https://'):
+                logger.warning(f"URL images not fully supported. Using local file instead: {img_path}")
+                continue
+            else:
+                # Local file - encode to base64
+                image_data, mime_type = self._encode_image_to_base64(img_path)
+                parts.append({
+                    "inline_data": {
+                        "mime_type": mime_type,
+                        "data": image_data
+                    }
+                })
+
+        # Make API call with retry logic
+        response = self._call_api_with_retry(parts, use_json_mode)
+
+        # Parse response
+        result = self._parse_response(response, use_json_mode)
+
+        # Cache result
+        self.cache.set(self.model, cache_key, result, image_paths)
+
+        return result
+
     def _encode_image_to_base64(self, image_path: str) -> tuple[str, str]:
         """
         Encode a local image file to base64.
-        
+
         Args:
             image_path: Path to local image file
-        
+
         Returns:
             Tuple of (base64 string, mime_type)
         """
         try:
             path = Path(image_path)
-            
+
             # Determine MIME type from extension
             ext = path.suffix.lower()
             mime_types = {
@@ -296,14 +362,14 @@ Be detailed and precise."""
                 '.webp': 'image/webp'
             }
             mime_type = mime_types.get(ext, 'image/jpeg')
-            
+
             # Read and encode image
             with open(image_path, 'rb') as f:
                 image_bytes = f.read()
                 base64_str = base64.b64encode(image_bytes).decode('utf-8')
-            
+
             return base64_str, mime_type
-        
+
         except Exception as e:
             logger.error(f"Failed to encode image {image_path}: {e}")
             raise
