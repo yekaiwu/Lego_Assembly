@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Optional, List
 import uuid
 import shutil
+import json
 from loguru import logger
 
 from .config import get_settings
@@ -36,6 +37,7 @@ from .ingestion.ingest_service import get_ingestion_service
 from .rag.pipeline import get_rag_pipeline
 from .vector_store.chroma_manager import get_chroma_manager
 from .vision import get_state_analyzer, get_state_comparator, get_guidance_generator
+from .graph.graph_manager import get_graph_manager
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -58,6 +60,7 @@ settings = get_settings()
 ingestion_service = get_ingestion_service()
 rag_pipeline = get_rag_pipeline()
 chroma_manager = get_chroma_manager()
+graph_manager = get_graph_manager()
 
 
 # ==================== Health & Status ====================
@@ -489,6 +492,64 @@ async def list_manual_steps(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/manual/{manual_id}/extracted-steps")
+async def get_extracted_steps(
+    manual_id: str = PathParam(..., description="Manual identifier"),
+    limit: Optional[int] = Query(None, description="Limit number of steps to return", ge=1, le=100),
+    step_number: Optional[int] = Query(None, description="Get specific step only", ge=1)
+):
+    """
+    Get detailed extracted step data from Phase 1 processing.
+    
+    Returns the raw extracted step information including parts, actions, and notes.
+    """
+    try:
+        extracted_path = Path(settings.output_dir) / f"{manual_id}_extracted.json"
+        
+        if not extracted_path.exists():
+            raise HTTPException(
+                status_code=404,
+                detail=f"Extracted data not found for manual {manual_id}. Please process the manual first using main.py"
+            )
+        
+        with open(extracted_path, 'r', encoding='utf-8') as f:
+            all_steps = json.load(f)
+        
+        # Filter to valid steps only
+        valid_steps = [s for s in all_steps if s.get("step_number") and s.get("step_number") > 0]
+        
+        # Filter by step number if specified
+        if step_number:
+            valid_steps = [s for s in valid_steps if s.get("step_number") == step_number]
+            if not valid_steps:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Step {step_number} not found in manual {manual_id}"
+                )
+        
+        # Apply limit if specified
+        if limit:
+            valid_steps = valid_steps[:limit]
+        
+        return {
+            "manual_id": manual_id,
+            "total_steps": len([s for s in all_steps if s.get("step_number") and s.get("step_number") > 0]),
+            "returned_steps": len(valid_steps),
+            "steps": valid_steps
+        }
+        
+    except HTTPException:
+        raise
+    except FileNotFoundError as e:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Extracted data file not found: {e}"
+        )
+    except Exception as e:
+        logger.error(f"Error getting extracted steps: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ==================== Image Serving ====================
 
 @app.get("/api/image")
@@ -723,6 +784,290 @@ async def cleanup_session(
         raise
     except Exception as e:
         logger.error(f"Error cleaning up session: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==================== Hierarchical Graph API ====================
+
+@app.get("/api/manual/{manual_id}/graph/summary")
+async def get_graph_summary(
+    manual_id: str = PathParam(..., description="Manual identifier")
+):
+    """
+    Get summary of hierarchical assembly graph for a manual.
+    
+    Returns:
+        - Total nodes (parts, subassemblies)
+        - Total edges (relationships)
+        - Statistics by type
+    """
+    try:
+        summary = graph_manager.get_graph_summary(manual_id)
+        
+        if not summary:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Graph not found for manual {manual_id}. Please process the manual first."
+            )
+        
+        return summary
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting graph summary: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/manual/{manual_id}/graph/step/{step_number}/state")
+async def get_step_state(
+    manual_id: str = PathParam(..., description="Manual identifier"),
+    step_number: int = PathParam(..., description="Step number", ge=1)
+):
+    """
+    Get assembly state at a specific step from the hierarchical graph.
+    
+    Returns:
+        - Parts added in this step
+        - Subassemblies created/modified
+        - Cumulative state
+        - Completion percentage
+    """
+    try:
+        step_state = graph_manager.get_step_state(manual_id, step_number)
+        
+        if not step_state:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Step state not found for manual {manual_id} step {step_number}"
+            )
+        
+        return step_state
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting step state: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/manual/{manual_id}/graph/subassemblies")
+async def get_subassemblies(
+    manual_id: str = PathParam(..., description="Manual identifier")
+):
+    """
+    Get all subassemblies in a manual.
+    
+    Returns list of subassemblies with:
+        - Name and description
+        - Step created
+        - Parts contained
+        - Parent relationships
+    """
+    try:
+        subassemblies = graph_manager.get_nodes_by_type(manual_id, "subassembly")
+        
+        if not subassemblies and subassemblies is not None:
+            # Empty list means no subassemblies found
+            return {
+                "manual_id": manual_id,
+                "total_subassemblies": 0,
+                "subassemblies": []
+            }
+        
+        if subassemblies is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Graph not found for manual {manual_id}"
+            )
+        
+        # Enrich each subassembly with its parts
+        enriched = []
+        for subasm in subassemblies:
+            parts = graph_manager.get_subassembly_parts(manual_id, subasm['node_id'])
+            enriched.append({
+                "node_id": subasm['node_id'],
+                "name": subasm['name'],
+                "description": subasm.get('description', ''),
+                "step_created": subasm.get('step_created', 0),
+                "steps_used": subasm.get('steps_used', []),
+                "parts": [
+                    {
+                        "name": p['name'],
+                        "color": p.get('color', ''),
+                        "shape": p.get('shape', ''),
+                        "role": p.get('role', '')
+                    }
+                    for p in parts
+                ]
+            })
+        
+        return {
+            "manual_id": manual_id,
+            "total_subassemblies": len(enriched),
+            "subassemblies": enriched
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting subassemblies: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/manual/{manual_id}/progress")
+async def get_assembly_progress(
+    manual_id: str = PathParam(..., description="Manual identifier"),
+    session_id: Optional[str] = None
+):
+    """
+    Calculate assembly progress from current state.
+    
+    If session_id provided, analyzes uploaded images to determine progress.
+    Otherwise returns overall manual statistics.
+    
+    Returns:
+        - Progress percentage
+        - Completed subassemblies
+        - Remaining subassemblies
+        - Next major component
+    """
+    try:
+        graph = graph_manager.load_graph(manual_id)
+        
+        if not graph:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Graph not found for manual {manual_id}"
+            )
+        
+        metadata = graph.get('metadata', {})
+        total_steps = metadata.get('total_steps', 0)
+        
+        # If session_id provided, detect subassemblies from images
+        if session_id:
+            upload_dir = Path(f"/tmp/lego_assembly_uploads/{session_id}")
+            if not upload_dir.exists():
+                raise HTTPException(
+                    status_code=404,
+                    detail="Session not found"
+                )
+            
+            image_paths = sorted([str(p) for p in upload_dir.glob("image_*.*")])
+            
+            if image_paths:
+                # Detect subassemblies
+                state_analyzer = get_state_analyzer()
+                subasm_detection = state_analyzer.detect_subassemblies(
+                    image_paths=image_paths,
+                    manual_id=manual_id
+                )
+                
+                estimated_step = subasm_detection.get('estimated_step')
+                
+                if estimated_step:
+                    step_state = graph_manager.get_step_state(manual_id, estimated_step)
+                    
+                    if step_state:
+                        final_state = step_state.get('final_state', {})
+                        progress = final_state.get('completion_percentage', 0.0)
+                        
+                        # Get completed and remaining subassemblies
+                        all_subassemblies = graph_manager.get_nodes_by_type(manual_id, "subassembly")
+                        
+                        completed = []
+                        remaining = []
+                        
+                        for subasm in all_subassemblies:
+                            if subasm.get('step_created', 999) <= estimated_step:
+                                completed.append({
+                                    "name": subasm['name'],
+                                    "completed_at_step": subasm.get('step_created', 0)
+                                })
+                            else:
+                                remaining.append({
+                                    "name": subasm['name'],
+                                    "starts_at_step": subasm.get('step_created', 0)
+                                })
+                        
+                        return {
+                            "manual_id": manual_id,
+                            "progress_percentage": progress,
+                            "estimated_step": estimated_step,
+                            "total_steps": total_steps,
+                            "completed_subassemblies": completed,
+                            "remaining_subassemblies": remaining,
+                            "confidence": subasm_detection.get('step_confidence', 0.0)
+                        }
+        
+        # Default: return overall statistics
+        all_subassemblies = graph_manager.get_nodes_by_type(manual_id, "subassembly")
+        
+        return {
+            "manual_id": manual_id,
+            "total_steps": total_steps,
+            "total_subassemblies": len(all_subassemblies) if all_subassemblies else 0,
+            "total_parts": metadata.get('total_parts', 0),
+            "subassemblies": [
+                {
+                    "name": s['name'],
+                    "created_at_step": s.get('step_created', 0)
+                }
+                for s in (all_subassemblies or [])
+            ]
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting assembly progress: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/manual/{manual_id}/graph/node/{node_id}/hierarchy")
+async def get_node_hierarchy(
+    manual_id: str = PathParam(..., description="Manual identifier"),
+    node_id: str = PathParam(..., description="Node identifier")
+):
+    """
+    Get hierarchical path from root to a specific node.
+    
+    Shows how a part or subassembly fits into the overall assembly structure.
+    
+    Returns:
+        - Path from root model to target node
+        - Each node's type and description
+        - Step information
+    """
+    try:
+        path = graph_manager.get_assembly_path(manual_id, node_id)
+        
+        if not path:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Node {node_id} not found in manual {manual_id}"
+            )
+        
+        return {
+            "manual_id": manual_id,
+            "target_node_id": node_id,
+            "hierarchy_depth": len(path),
+            "path": [
+                {
+                    "node_id": node['node_id'],
+                    "type": node.get('type', 'unknown'),
+                    "name": node.get('name', ''),
+                    "step_created": node.get('step_created', 0),
+                    "layer": node.get('layer', 0)
+                }
+                for node in path
+            ]
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting node hierarchy: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

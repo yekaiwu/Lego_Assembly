@@ -8,35 +8,34 @@ Production-ready system combining Vision-Language Models (VLMs) for manual proce
 
 ## 🎯 System Overview
 
-This system provides end-to-end LEGO assembly assistance through three integrated phases:
+This system provides end-to-end LEGO assembly assistance through an integrated workflow:
 
-### **Phase 1: Manual Processing**
+### **Phase 1: Manual Processing** (Automatic)
 - VLM-based step extraction from PDF instruction manuals
 - 3D plan generation with spatial reasoning
 - Dependency graph construction
+- **🧠 Hierarchical Assembly Graph**: Parts → Subassemblies → Model structure
 - Part database integration with Rebrickable
 
-### **Phase 2: Multimodal RAG Backend** ⭐ NEW
+### **Phase 2: Multimodal RAG Ingestion** ⭐ Automatic
 - **🎨 Multimodal Embeddings**: Text + diagram descriptions for better visual retrieval
+- **Automatic Vector Store Population**: Seamlessly integrated with Phase 1
+- **Progress Checkpointing**: Resume interrupted processing automatically
+
+### **Phase 3: RAG Backend & Frontend**
 - **🤖 LLM Query Augmentation**: Understands vague queries like "What's next?"
 - **📸 Computer Vision State Analysis**: Upload photos to track progress automatically
 - **🔍 VLM-based Part Detection**: Identifies visible parts, colors, and connections
 - **📊 Progress Mapping**: Compares detected state with expected plan
 - **⚠️ Error Detection**: Identifies missing parts and incorrect placements
 - **💡 Intelligent Guidance**: Generates next-step instructions based on current state
-- **🧠 Image-Aware Retrieval**: Boosts results matching detected parts
+- **🧠 Graph-Enhanced Retrieval**: Combines structural and semantic search
+- **🏗️ Subassembly Detection**: Recognizes completed structures from photos
+- **📈 Hierarchical Progress Tracking**: Understands assembly stages via graph
 - ChromaDB vector database for semantic search
 - Qwen/DeepSeek/Moonshot LLM integration
-- FastAPI REST API with 15+ endpoints
-
-### **Phase 3: Frontend UI** ⭐ ENHANCED
+- FastAPI REST API with 20+ endpoints
 - Next.js 14 web application with TypeScript
-- **Photo Upload Interface**: Multi-image capture (2-4 angles)
-- **Visual Progress Tracking**: Real-time assembly state display
-- **Dual Mode**: Text chat + Photo analysis tabs
-- Manual selection and browsing interface
-- Step-by-step navigator with images
-- Real-time AI chat assistant
 
 ---
 
@@ -46,13 +45,13 @@ This system provides end-to-end LEGO assembly assistance through three integrate
 ┌──────────────────────────────────────────────────┐
 │          Frontend (Next.js)                      │
 │  Manual Selector │ Step Navigator               │
-│  Text Chat │ Photo Upload & Analysis ⭐ NEW     │
+│  Text Chat │ Photo Upload & Analysis            │
 └─────────────┬────────────────────────────────────┘
               │ REST API
 ┌─────────────┴────────────────────────────────────┐
 │            Backend (FastAPI)                     │
 │  ┌──────────────────────────────────────────┐   │
-│  │  Vision Analysis Pipeline ⭐ NEW         │   │
+│  │  Vision Analysis Pipeline                │   │
 │  │  Photos → VLM → State Comparison →       │   │
 │  │  Progress Mapping → Guidance Generation  │   │
 │  └──────────────────────────────────────────┘   │
@@ -64,9 +63,13 @@ This system provides end-to-end LEGO assembly assistance through three integrate
 └──────────────────────────────────────────────────┘
               │
 ┌─────────────┴────────────────────────────────────┐
-│    Phase 1: Manual Processing                   │
-│  VLM Extraction → 3D Planning → JSON             │
-│  (Ground Truth for Vision Comparison)            │
+│    Complete Workflow (main.py)                  │
+│  ┌───────────────────────────────────────────┐  │
+│  │ Phase 1: PDF → VLM → Extract → Plan      │  │
+│  │ Phase 2: Generate Multimodal Embeddings  │  │
+│  │ Phase 2: Ingest into Vector Store        │  │
+│  └───────────────────────────────────────────┘  │
+│  ⏸️ Checkpointing: Resume on interruption       │
 └──────────────────────────────────────────────────┘
 ```
 
@@ -74,7 +77,7 @@ This system provides end-to-end LEGO assembly assistance through three integrate
 
 ```
 Lego_Assembly/
-├── main.py                      # Phase 1 orchestrator
+├── main.py                      # Complete workflow orchestrator (Phase 1 + 2)
 ├── ENV_TEMPLATE.txt             # Environment configuration template
 ├── pyproject.toml               # Python dependencies (uv)
 ├── QUICK_START.md               # Quick setup guide
@@ -82,22 +85,26 @@ Lego_Assembly/
 ├── src/                         # Phase 1: Manual Processing
 │   ├── api/                    # VLM clients (Qwen, DeepSeek, Kimi)
 │   ├── vision_processing/      # PDF extraction & VLM analysis
-│   ├── plan_generation/        # 3D planning & part database
+│   ├── plan_generation/        # 3D planning, part database & graph builder
+│   │   └── graph_builder.py   # 🧠 NEW: Hierarchical graph construction
 │   └── utils/                  # Configuration & caching
 │
 ├── backend/                     # Phase 2: Vision-Enhanced RAG
 │   ├── app/
-│   │   ├── main.py            # FastAPI application (15+ endpoints)
+│   │   ├── main.py            # FastAPI application (20+ endpoints)
 │   │   ├── config.py          # Configuration
 │   │   ├── models/            # Pydantic schemas
 │   │   ├── llm/               # LLM clients (Qwen/DeepSeek/Moonshot)
-│   │   ├── vision/            # ⭐ NEW: Vision analysis module
-│   │   │   ├── state_analyzer.py      # VLM-based part detection
+│   │   ├── graph/             # 🧠 NEW: Hierarchical graph module
+│   │   │   ├── graph_manager.py       # Graph query interface
+│   │   │   └── __init__.py            # Module exports
+│   │   ├── vision/            # ⭐ Vision analysis module
+│   │   │   ├── state_analyzer.py      # VLM-based part & subassembly detection
 │   │   │   ├── state_comparator.py    # Progress mapping
 │   │   │   └── guidance_generator.py  # Next-step guidance
 │   │   ├── vector_store/      # ChromaDB integration
 │   │   ├── ingestion/         # Data processing
-│   │   ├── rag/               # RAG pipeline (text queries)
+│   │   ├── rag/               # RAG pipeline (graph + vector hybrid)
 │   │   └── scripts/           # CLI tools
 │   └── chroma_db/             # Vector database (auto-created)
 │
@@ -112,8 +119,11 @@ Lego_Assembly/
 │   └── lib/                   # API client & state (vision APIs)
 │
 ├── output/                      # Generated outputs
-│   ├── {manual_id}_*.json     # Structured data
-│   └── temp_pages/*.png       # Step images
+│   ├── {manual_id}_extracted.json     # Step extraction data
+│   ├── {manual_id}_plan.json          # 3D assembly plan
+│   ├── {manual_id}_dependencies.json  # Dependency graph
+│   ├── {manual_id}_graph.json         # 🧠 NEW: Hierarchical assembly graph
+│   └── temp_pages/*.png               # Step images
 │
 └── data/
     └── parts_database.db       # LEGO parts cache
@@ -155,18 +165,48 @@ uv sync
 pip install -e .
 ```
 
-### 3. Process a Manual (Phase 1)
+### 3. Process a Manual (Complete Workflow - Phase 1 + 2)
 
 ```bash
-# Process LEGO manual from URL
-python main.py https://www.lego.com/cdn/product-assets/product.bi.core.pdf/6454922.pdf
+# Process LEGO manual from URL (automatically extracts AND ingests)
+uv run python main.py https://www.lego.com/cdn/product-assets/product.bi.core.pdf/6454922.pdf
+
+# ✓ Extracts steps from PDF using VLM
+# ✓ Generates dependency and hierarchical graphs
+# ✓ Creates 3D assembly plans
+# ✓ Ingests into vector store with multimodal embeddings
+# ⏱️  Takes ~2-5 minutes total (depends on manual size)
 
 # Output created in ./output/:
-#   6454922_extracted.json
-#   6454922_plan.json
-#   6454922_dependencies.json
-#   6454922_plan.txt
-#   temp_pages/*.png
+#   6454922_extracted.json         (Step data)
+#   6454922_plan.json              (3D assembly plan)
+#   6454922_dependencies.json      (Step dependencies)
+#   6454922_graph.json             (Hierarchical structure)
+#   6454922_plan.txt               (Human-readable plan)
+#   temp_pages/*.png               (Step diagram images)
+#   .6454922_checkpoint.json       (Progress checkpoint - hidden)
+```
+
+**🎯 One Command Does It All**: No need to run separate extraction and ingestion steps!
+
+**⏸️ Checkpointing Support**: If interrupted (Ctrl+C or crash), simply rerun the same command to resume:
+- ✓ Completed steps are automatically skipped
+- ✓ Progress is saved after each major step
+- ✓ No wasted computation or API calls
+
+**Advanced Options**:
+```bash
+# Skip vector store ingestion (only generate files)
+uv run python main.py <url> --skip-ingestion
+
+# Use text-only embeddings (faster, less accurate)
+uv run python main.py <url> --no-multimodal
+
+# Start from scratch (ignore checkpoint)
+uv run python main.py <url> --no-resume
+
+# View all options
+uv run python main.py --help
 ```
 
 ### 4. Start RAG Backend
@@ -175,9 +215,6 @@ python main.py https://www.lego.com/cdn/product-assets/product.bi.core.pdf/64549
 # Navigate to backend
 cd backend
 
-# Ingest manual into vector store (with multimodal embeddings)
-python -m app.scripts.ingest_manual 6454922
-
 # Start FastAPI server
 uvicorn app.main:app --reload --port 8000
 
@@ -185,7 +222,7 @@ uvicorn app.main:app --reload --port 8000
 # API docs: http://localhost:8000/docs
 ```
 
-**Note**: Ingestion now generates multimodal embeddings (text + diagram descriptions) using Qwen-VL. This takes ~30-60 seconds per manual but significantly improves retrieval quality for visual queries.
+**Note**: Manual is already ingested from Step 3! Just start the backend and you're ready to query.
 
 ### 5. Start Frontend
 
@@ -317,6 +354,49 @@ This generates fused embeddings (text + diagram descriptions) for improved visua
 
 ---
 
+### 🧠 Hierarchical Assembly Graph (NEW!)
+
+**The Mental Model Feature**: System now understands assembly structure beyond individual steps!
+
+**How It Works**:
+1. **Graph Construction**: During manual processing (Phase 1), builds hierarchical graph:
+   - **Parts**: Individual LEGO pieces with roles (structural, decorative, functional)
+   - **Subassemblies**: Groups of parts forming distinct units (e.g., "wheel assembly")
+   - **Model**: Final complete assembly
+2. **Relationship Tracking**: Understands parent-child connections (what becomes part of what)
+3. **State Progression**: Tracks assembly state at each step (what exists, what's new)
+4. **Graph-Enhanced Retrieval**: Combines structural and semantic search for better answers
+
+**Key Capabilities**:
+- ✅ **Structural Queries**: "What subassembly contains the red brick?"
+- ✅ **Relationship Queries**: "What is the wheel assembly made from?"
+- ✅ **Hierarchy Visualization**: "Show me the structure of step 5"
+- ✅ **Progress Tracking**: Understands completion via subassemblies
+- ✅ **Subassembly Detection**: Recognizes completed structures from photos
+
+**Example Workflow**:
+```
+1. Process manual → Generates graph.json
+2. System detects subassemblies (e.g., "Front Wheel Assembly" at step 5)
+3. User uploads photo → System recognizes "Front Wheel Assembly" 
+4. System estimates: "You've completed steps 1-5 (25%)"
+5. User asks: "What is the wheel assembly for?"
+6. System uses graph: "The Front Wheel Assembly (created in step 5) 
+   contains 2 wheels, 1 axle, and 1 hub. It attaches to the Car Body 
+   in step 12."
+```
+
+**API Endpoints**:
+- `GET /api/manual/{id}/graph/summary` - Graph statistics
+- `GET /api/manual/{id}/graph/subassemblies` - List all subassemblies
+- `GET /api/manual/{id}/graph/step/{n}/state` - State at specific step
+- `GET /api/manual/{id}/progress` - Assembly progress (with photo support)
+- `GET /api/manual/{id}/graph/node/{id}/hierarchy` - Hierarchical path
+
+**Technical Details**: See [IMPLEMENTATION_COMPLETE.md](IMPLEMENTATION_COMPLETE.md)
+
+---
+
 ### Phase 1: Manual Processing
 
 **Input**: PDF instruction manual or image directory  
@@ -358,17 +438,24 @@ python main.py <manual_url> -o ./output --assembly-id 6454922
 
 **API Endpoints**:
 ```
-GET  /health                          # Health check
-POST /api/ingest/manual/{id}          # Ingest manual with multimodal embeddings
-POST /api/query/text                  # Ask question (optionally with session_id)
-POST /api/query/multimodal            # Query with uploaded images (NEW!)
-GET  /api/manual/{id}/step/{num}      # Get step details
-GET  /api/manuals                     # List all manuals
-GET  /api/manual/{id}/steps           # List manual steps
-GET  /api/image?path={path}           # Serve images
-POST /api/vision/upload-images        # Upload assembly photos (NEW!)
-POST /api/vision/analyze              # Analyze assembly state (NEW!)
-DELETE /api/vision/session/{id}       # Cleanup session
+GET  /health                                    # Health check
+POST /api/ingest/manual/{id}                    # Ingest manual with multimodal embeddings
+POST /api/query/text                            # Ask question (optionally with session_id)
+POST /api/query/multimodal                      # Query with uploaded images
+GET  /api/manual/{id}/step/{num}                # Get step details
+GET  /api/manuals                               # List all manuals
+GET  /api/manual/{id}/steps                     # List manual steps
+GET  /api/image?path={path}                     # Serve images
+POST /api/vision/upload-images                  # Upload assembly photos
+POST /api/vision/analyze                        # Analyze assembly state
+DELETE /api/vision/session/{id}                 # Cleanup session
+
+# 🧠 NEW: Hierarchical Graph Endpoints
+GET  /api/manual/{id}/graph/summary             # Graph statistics
+GET  /api/manual/{id}/graph/step/{n}/state      # Assembly state at step
+GET  /api/manual/{id}/graph/subassemblies       # List all subassemblies
+GET  /api/manual/{id}/progress                  # Assembly progress tracking
+GET  /api/manual/{id}/graph/node/{id}/hierarchy # Node hierarchy path
 ```
 
 ### Phase 3: Frontend UI
@@ -522,6 +609,52 @@ export default function NewComponent() {
 
 ---
 
+## 🛠️ Utility Scripts
+
+The system includes several utility scripts for debugging and analysis:
+
+### Graph Visualization
+```bash
+# Visualize hierarchical assembly graph
+python3 backend/app/scripts/visualize_graph.py output/6454922_graph.json
+
+# With detailed subassembly information
+python3 backend/app/scripts/visualize_graph.py output/6454922_graph.json --show-subassemblies
+
+# With step progression
+python3 backend/app/scripts/visualize_graph.py output/6454922_graph.json --show-steps 10
+```
+
+### Graph Testing
+```bash
+# Test graph regeneration with enhanced implementation
+python3 backend/app/scripts/test_graph_regeneration.py
+```
+
+### Database Inspection
+```bash
+# View vector store contents
+cd backend
+python -m app.scripts.inspect_vector_store
+
+# View extracted steps
+python -m app.scripts.view_steps 6454922
+
+# Simple database inspection
+python -m app.scripts.inspect_db_simple
+```
+
+### Batch Processing
+```bash
+# Ingest all manuals
+cd backend
+python -m app.scripts.ingest_all
+```
+
+For detailed graph debugging and verification, see the **Graph Visualization & Debugging** section in [QUICK_START.md](QUICK_START.md).
+
+---
+
 ## 🐛 Troubleshooting
 
 ### "API key not found"
@@ -573,6 +706,8 @@ kill -9 <PID>
 - **[QUICK_START.md](QUICK_START.md)** - Step-by-step setup guide
 - **[IMPLEMENTATION_SUMMARY.md](IMPLEMENTATION_SUMMARY.md)** - Technical details
 - **[MULTIMODAL_IMPLEMENTATION_SUMMARY.md](MULTIMODAL_IMPLEMENTATION_SUMMARY.md)** - Multimodal RAG technical documentation
+- **[MENTAL_MODEL_IMPLEMENTATION_PLAN.md](MENTAL_MODEL_IMPLEMENTATION_PLAN.md)** - Hierarchical graph design document
+- **[IMPLEMENTATION_COMPLETE.md](IMPLEMENTATION_COMPLETE.md)** - Graph implementation summary
 - **API Docs**: http://localhost:8000/docs (when backend running)
 
 ---
@@ -582,12 +717,15 @@ kill -9 <PID>
 ### Current Features
 - ✅ Multi-VLM manual processing
 - ✅ 3D plan generation
+- ✅ **Hierarchical assembly graph** (parts → subassemblies → model)
 - ✅ Multimodal embeddings (text + diagrams)
 - ✅ LLM query augmentation for vague queries
+- ✅ **Graph-enhanced retrieval** (structural + semantic search)
 - ✅ RAG pipeline with semantic search
 - ✅ Image upload for visual queries
 - ✅ Part recognition with computer vision
-- ✅ Progress tracking with VLM
+- ✅ **Subassembly detection** from user photos
+- ✅ Progress tracking with VLM and graph
 - ✅ Web UI with chat interface
 - ✅ Chinese LLM support
 
@@ -625,6 +763,6 @@ For issues or questions:
 2. Review API documentation at `/docs` endpoint
 3. Check configuration in `.env` file
 
-**System Version**: 2.0.0  
+**System Version**: 2.1.0 (with Hierarchical Graph)  
 **Last Updated**: December 2025  
 **Status**: ✅ Production Ready

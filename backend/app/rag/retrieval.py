@@ -11,6 +11,7 @@ from loguru import logger
 from ..vector_store.chroma_manager import get_chroma_manager
 from ..config import get_settings
 from .query_augmenter import get_query_augmenter
+from ..graph.graph_manager import get_graph_manager
 
 
 class RetrieverService:
@@ -21,11 +22,19 @@ class RetrieverService:
         self.settings = get_settings()
         self.chroma = get_chroma_manager()
         self.query_augmenter = get_query_augmenter()
+        self.graph_manager = get_graph_manager()
         
         # Keywords that indicate important queries
         self.step_keywords = ['step', 'instruction', 'how', 'what', 'where', 'build']
         self.part_keywords = ['part', 'piece', 'brick', 'plate', 'color']
         self.action_keywords = ['attach', 'connect', 'place', 'add', 'remove', 'rotate']
+        
+        # Keywords that indicate graph-relevant queries
+        self.graph_keywords = [
+            'subassembly', 'assembly', 'structure', 'section',
+            'contains', 'made of', 'part of', 'what is',
+            'where does', 'hierarchy', 'relationship'
+        ]
     
     def retrieve_context(
         self,
@@ -70,6 +79,9 @@ class RetrieverService:
                 logger.info(f"Using augmented query for retrieval")
                 query = augmented_query
             
+            # Check if query is graph-relevant (structural query)
+            is_graph_query = self._is_graph_relevant_query(query)
+            
             # Extract step range from image analysis if available
             step_range = None
             if image_analysis and 'step_guess' in image_analysis:
@@ -79,6 +91,13 @@ class RetrieverService:
             # Extract step number from query if not provided
             if step_number is None:
                 step_number = self._extract_step_number(query)
+            
+            # If graph-relevant query, use graph-enhanced retrieval
+            if is_graph_query:
+                logger.info("Using graph-enhanced retrieval for structural query")
+                return self._retrieve_with_graph_context(
+                    query, manual_id, top_k, image_analysis
+                )
             
             # If we have step range from image, use step range retrieval
             if step_range and not step_number:
@@ -665,6 +684,218 @@ class RetrieverService:
             logger.debug(f"Part match boost: {boost:.3f} ({matches} matches)")
         
         return boost
+    
+    def _is_graph_relevant_query(self, query: str) -> bool:
+        """
+        Determine if query is graph-relevant (structural/relationship query).
+        
+        Args:
+            query: User query
+        
+        Returns:
+            True if query should use graph-enhanced retrieval
+        """
+        query_lower = query.lower()
+        
+        # Check for graph-specific keywords
+        return any(keyword in query_lower for keyword in self.graph_keywords)
+    
+    def _retrieve_with_graph_context(
+        self,
+        query: str,
+        manual_id: str,
+        top_k: int,
+        image_analysis: Optional[Dict[str, Any]] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Retrieve using both graph structure and vector embeddings.
+        
+        Process:
+        1. Parse query for structural entities (subassemblies, parts)
+        2. Query graph to find related nodes and steps
+        3. Query vector store for semantic matches
+        4. Combine and re-rank results
+        
+        Args:
+            query: User query
+            manual_id: Manual identifier
+            top_k: Max results
+            image_analysis: Optional image analysis for additional context
+        
+        Returns:
+            Combined and re-ranked results
+        """
+        try:
+            # Step 1: Extract entities from query
+            entities = self._extract_entities_from_query(query, manual_id)
+            
+            # Step 2: Query graph for relevant steps
+            graph_step_numbers = set()
+            
+            for entity in entities:
+                entity_type = entity.get('type')
+                entity_name = entity.get('name')
+                
+                if entity_type == 'subassembly':
+                    # Find subassembly nodes
+                    nodes = self.graph_manager.get_node_by_name(
+                        manual_id=manual_id,
+                        name=entity_name,
+                        fuzzy=True
+                    )
+                    
+                    # Get steps where these subassemblies are used
+                    for node in nodes:
+                        if node.get('type') == 'subassembly':
+                            steps = self.graph_manager.get_steps_for_node(
+                                manual_id=manual_id,
+                                node_id=node['node_id']
+                            )
+                            graph_step_numbers.update(steps)
+                
+                elif entity_type == 'part':
+                    # Find part nodes
+                    nodes = self.graph_manager.get_node_by_name(
+                        manual_id=manual_id,
+                        name=entity_name,
+                        fuzzy=True
+                    )
+                    
+                    # Get steps where these parts are used
+                    for node in nodes:
+                        if node.get('type') == 'part':
+                            steps = self.graph_manager.get_steps_for_node(
+                                manual_id=manual_id,
+                                node_id=node['node_id']
+                            )
+                            graph_step_numbers.update(steps)
+            
+            logger.info(f"Graph query found {len(graph_step_numbers)} relevant steps")
+            
+            # Step 3: Get vector search results
+            vector_results = self.chroma.query(
+                query_text=query,
+                n_results=top_k * 2,
+                where={"manual_id": manual_id}
+            )
+            
+            # Step 4: Combine and re-rank results
+            contexts = []
+            seen_ids = set()
+            
+            if vector_results and 'documents' in vector_results and len(vector_results['documents']) > 0:
+                documents = vector_results['documents'][0]
+                metadatas = vector_results['metadatas'][0]
+                distances = vector_results['distances'][0]
+                ids = vector_results['ids'][0]
+                
+                for doc, metadata, distance, doc_id in zip(documents, metadatas, distances, ids):
+                    if doc_id in seen_ids:
+                        continue
+                    seen_ids.add(doc_id)
+                    
+                    doc_step = metadata.get('step_number', 0)
+                    
+                    # Calculate base similarity
+                    similarity = max(0, 1 - (distance / 2))
+                    
+                    # Calculate graph relevance boost
+                    graph_boost = 0.0
+                    if doc_step in graph_step_numbers:
+                        graph_boost = 0.4  # High boost for graph matches
+                    
+                    # Calculate intersection boost
+                    intersection_boost = 0.0
+                    if doc_step in graph_step_numbers and similarity > 0.5:
+                        intersection_boost = 0.2  # Extra boost for being in both
+                    
+                    # Apply part-based boost if image analysis available
+                    part_boost = 0.0
+                    if image_analysis:
+                        part_boost = self._calculate_part_match_boost(doc, image_analysis)
+                    
+                    # Combined score
+                    final_score = (
+                        similarity * 0.4 +
+                        graph_boost +
+                        intersection_boost +
+                        part_boost * 0.2
+                    )
+                    
+                    contexts.append({
+                        "id": doc_id,
+                        "content": doc,
+                        "metadata": metadata,
+                        "similarity_score": round(similarity, 3),
+                        "graph_boost": round(graph_boost, 3),
+                        "intersection_boost": round(intersection_boost, 3),
+                        "part_boost": round(part_boost, 3),
+                        "final_score": round(final_score, 3),
+                        "step_number": doc_step,
+                        "image_path": metadata.get('image_path', '')
+                    })
+            
+            # Sort by final score
+            contexts.sort(key=lambda x: x['final_score'], reverse=True)
+            
+            logger.info(f"Graph-enhanced retrieval: {len(contexts[:top_k])} contexts "
+                       f"(graph steps: {len(graph_step_numbers)})")
+            return contexts[:top_k]
+            
+        except Exception as e:
+            logger.error(f"Error in graph-enhanced retrieval: {e}")
+            # Fall back to hybrid retrieval
+            return self._retrieve_hybrid(query, manual_id, top_k, image_analysis)
+    
+    def _extract_entities_from_query(
+        self,
+        query: str,
+        manual_id: str
+    ) -> List[Dict[str, str]]:
+        """
+        Extract structural entities (parts, subassemblies) from query.
+        
+        Args:
+            query: User query
+            manual_id: Manual identifier
+        
+        Returns:
+            List of entities with type and name
+        """
+        entities = []
+        query_lower = query.lower()
+        
+        # Simple keyword-based extraction
+        # In full implementation, could use NER or LLM
+        
+        # Check for subassembly mentions
+        if 'assembly' in query_lower or 'subassembly' in query_lower:
+            # Extract potential subassembly name
+            # Simple heuristic: words between "the" and "assembly/subassembly"
+            import re
+            pattern = r'(?:the\s+)?(\w+(?:\s+\w+)*?)\s+(?:sub)?assembly'
+            matches = re.findall(pattern, query_lower)
+            
+            for match in matches:
+                entities.append({
+                    'type': 'subassembly',
+                    'name': match.strip()
+                })
+        
+        # Check for part mentions (colors + shapes)
+        colors = ['red', 'blue', 'yellow', 'green', 'black', 'white', 'gray', 'grey', 'orange', 'brown']
+        shapes = ['brick', 'plate', 'tile', 'wheel', 'axle', 'pin', 'connector']
+        
+        for color in colors:
+            for shape in shapes:
+                if color in query_lower and shape in query_lower:
+                    entities.append({
+                        'type': 'part',
+                        'name': f"{color} {shape}"
+                    })
+        
+        logger.debug(f"Extracted {len(entities)} entities from query")
+        return entities
 
 
 def get_retriever_service() -> RetrieverService:

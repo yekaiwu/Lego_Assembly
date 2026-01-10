@@ -63,6 +63,7 @@ class QwenClient:
         """
         Get embeddings for texts.
         Batches requests to respect Qwen's 25-text limit per API call.
+        Truncates texts longer than 2048 characters.
         
         Args:
             texts: List of texts to embed
@@ -76,12 +77,26 @@ class QwenClient:
             batch_size = 25
             all_embeddings = []
             
+            # Qwen text-embedding has a limit of 2048 characters per text
+            MAX_CHARS = 2048
+            
             for i in range(0, len(texts), batch_size):
                 batch = texts[i:i + batch_size]
                 
+                # Truncate texts that are too long
+                truncated_batch = []
+                for text in batch:
+                    if len(text) > MAX_CHARS:
+                        # Truncate and add indicator
+                        truncated_text = text[:MAX_CHARS-20] + "... [truncated]"
+                        truncated_batch.append(truncated_text)
+                        logger.warning(f"Text truncated from {len(text)} to {len(truncated_text)} chars for embedding")
+                    else:
+                        truncated_batch.append(text)
+                
                 response = dashscope.TextEmbedding.call(
                     model=model,
-                    input=batch
+                    input=truncated_batch
                 )
                 
                 if response.status_code == 200:

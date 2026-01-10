@@ -2,7 +2,14 @@
 
 Get the complete Vision-Enhanced RAG system running in 10 minutes.
 
-**NEW**: Now with computer vision-based assembly state analysis!
+**NEW in 2.2**: 
+- ✅ **One-command workflow**: Extraction + Ingestion in a single step
+- ✅ **Progress checkpointing**: Resume interrupted processing automatically
+- ✅ **Automatic text truncation**: Handles long content for embeddings
+- ✅ Computer vision-based assembly state analysis
+- ✅ 🧠 **Hierarchical assembly graph** (parts → subassemblies → model)
+- ✅ **Graph-enhanced retrieval** for structural queries
+- ✅ **Subassembly detection** from user photos
 
 ---
 
@@ -72,18 +79,66 @@ uv sync
 # This installs Phase 1 + Backend dependencies
 ```
 
-### Step 3: Process a Manual (Phase 1)
+### Step 3: Process Manual (Complete Workflow)
 
 ```bash
-# Process LEGO manual from URL
+# Process LEGO manual from URL (Extraction + Ingestion in one command!)
 uv run python main.py https://www.lego.com/cdn/product-assets/product.bi.core.pdf/6454922.pdf
 
-# Wait ~30-60 seconds...
-# ✓ Output created in ./output/
-#   - 6454922_extracted.json
-#   - 6454922_plan.json
-#   - 6454922_dependencies.json
-#   - temp_pages/*.png
+# ⏱️ Takes ~2-5 minutes (depends on manual size)
+# ✓ Step 1/6: Extract pages from PDF
+# ✓ Step 2/6: VLM extraction of steps
+# ✓ Step 3/6: Build dependency graph
+# ✓ Step 4/6: Build hierarchical graph
+# ✓ Step 5/6: Generate 3D plan
+# ✓ Step 6/6: Ingest into vector store (multimodal embeddings)
+
+# Output created in ./output/
+#   - 6454922_extracted.json      (Step data)
+#   - 6454922_plan.json           (3D assembly plan)
+#   - 6454922_dependencies.json   (Step dependencies)
+#   - 6454922_graph.json          (Hierarchical assembly graph)
+#   - 6454922_plan.txt            (Human-readable plan)
+#   - temp_pages/*.png            (Step diagram images)
+#   - .6454922_checkpoint.json    (Progress checkpoint - hidden)
+```
+
+**🎯 One Command Does It All!**
+- No need for separate extraction and ingestion steps
+- Automatically generates multimodal embeddings (text + diagrams)
+- Vector store is ready immediately after completion
+
+**⏸️ Checkpointing & Resume**:
+If the process is interrupted (Ctrl+C, crash, or network error):
+```bash
+# Just rerun the same command - it will resume automatically!
+uv run python main.py https://www.lego.com/cdn/product-assets/product.bi.core.pdf/6454922.pdf
+
+# ↻ Resuming from checkpoint: last completed step = step_extraction
+# ✓ Step 1/6: Page extraction already complete (skipping)
+# ✓ Step 2/6: Step extraction already complete (skipping)
+# → Step 3/6: Building dependency graph...
+```
+
+The checkpoint system:
+- ✅ Saves progress after each major step
+- ✅ Automatically skips completed steps on resume
+- ✅ No wasted API calls or computation
+- ✅ Checkpoint cleared on successful completion
+
+**Advanced Options**:
+```bash
+# Skip vector store ingestion (only generate files)
+uv run python main.py <url> --skip-ingestion
+
+# Use text-only embeddings (faster, less accurate)
+uv run python main.py <url> --no-multimodal
+
+# Start from scratch (ignore checkpoint)
+uv run python main.py <url> --no-resume
+
+# View all options
+uv run python main.py --help
 ```
 
 ### Step 4: Start Backend (Terminal 1)
@@ -91,11 +146,7 @@ uv run python main.py https://www.lego.com/cdn/product-assets/product.bi.core.pd
 ```bash
 cd backend
 
-# Ingest the manual into vector store (with multimodal embeddings)
-uv run python -m app.scripts.ingest_manual 6454922
-# ⏱️ Takes ~30-60 seconds (generates diagram descriptions)
-
-# Start backend server
+# Start backend server (manual already ingested!)
 uv run uvicorn app.main:app --reload --port 8000
 
 # ✓ Backend running at http://localhost:8000
@@ -104,7 +155,56 @@ uv run uvicorn app.main:app --reload --port 8000
 
 Keep this terminal running!
 
-**What's happening?** Ingestion now uses Qwen-VL to generate diagram descriptions, creating multimodal embeddings (text + visual) for better retrieval.
+**Note**: The manual is already in the vector store from Step 3. No additional ingestion needed!
+
+**What happens during the workflow?** 📦
+
+The complete workflow processes your manual in 6 integrated steps:
+
+**Steps 1-5: Extraction & Graph Building**
+1. **Page Extraction**: Converts PDF to individual page images
+2. **VLM Extraction**: Uses VLM to extract step information (parts, actions, spatial relationships)
+3. **Dependency Graph**: Infers step dependencies
+4. **Hierarchical Graph**: Builds parts → subassemblies → model structure
+5. **3D Plan Generation**: Creates assembly plan with spatial coordinates
+
+**Step 6: Vector Store Ingestion** (Automatic)
+Converts Phase 1 output into a searchable vector database:
+
+1. **Loads Phase 1 Data**: Reads all JSON files from `output/` directory
+
+2. **Processes Each Step** (with multimodal embeddings):
+   - For each step, loads the corresponding diagram image
+   - **Multimodal Processing** (if enabled, default):
+     - Uses **Qwen-VL** to analyze the step diagram image
+     - Generates a detailed text description of what's shown (e.g., "Red 2x4 brick attached to blue base plate, yellow wheel on left side...")
+     - Combines the step instructions text + diagram description
+     - Creates a **fused embedding** that captures both text and visual information
+   - **Text-Only Fallback** (if image missing):
+     - Uses only the step text content
+     - Creates text embedding
+
+3. **Creates Searchable Chunks**:
+   - Each step becomes a "chunk" with:
+     - Content: Instructions + diagram description (auto-truncated if > 2048 chars)
+     - Embedding: Vector representation (for semantic search)
+     - Metadata: Step number, parts, dependencies, image path
+
+4. **Stores in ChromaDB**:
+   - Saves all chunks to the vector database
+   - Enables fast semantic search and retrieval
+
+**Why it takes 2-5 minutes**: 
+- VLM extraction: ~1-2 seconds per step
+- Multimodal embedding: ~1-2 seconds per step
+- For a 50-step manual: 50 VLM calls + 50 embedding calls = ~2-5 minutes
+- **Result**: High-quality extraction + searchable vector store!
+
+**Benefits of Multimodal Embeddings**:
+- ✅ Better visual query understanding ("What does step 5 look like?")
+- ✅ Improved part matching from images
+- ✅ Enhanced context for vague queries
+- ✅ More accurate step estimation from user photos
 
 ### Step 5: Start Frontend (Terminal 2)
 
@@ -170,6 +270,11 @@ curl http://localhost:8000/api/manuals
 curl -X POST http://localhost:8000/api/query/text \
   -H "Content-Type: application/json" \
   -d '{"manual_id": "6454922", "question": "What is step 1?"}'
+
+# 🧠 Test hierarchical graph endpoints (NEW!)
+curl http://localhost:8000/api/manual/6454922/graph/summary
+curl http://localhost:8000/api/manual/6454922/graph/subassemblies
+curl http://localhost:8000/api/manual/6454922/progress
 ```
 
 ### Test Frontend - Text Chat
@@ -357,6 +462,10 @@ After setup, you have:
 - "How do I attach the red brick?"
 - "What's the next step?"
 - "Show me dependencies"
+- 🧠 **NEW: Structural queries**:
+  - "What subassembly contains the red brick?"
+  - "What is the wheel assembly made from?"
+  - "Show me the hierarchy of step 5"
 
 **Photo Analysis Mode - Try this workflow** ⭐:
 1. Build steps 1-3 of your LEGO set
@@ -378,14 +487,111 @@ After setup, you have:
 
 ---
 
+## 📊 Graph Visualization & Debugging
+
+The system generates hierarchical assembly graphs that map parts → subassemblies → model structure. Use these tools to verify and debug graph quality.
+
+### View Graph Structure
+
+```bash
+# Basic visualization
+python3 backend/app/scripts/visualize_graph.py output/6454922_graph.json
+
+# With subassembly details
+python3 backend/app/scripts/visualize_graph.py output/6454922_graph.json --show-subassemblies
+
+# With step progression
+python3 backend/app/scripts/visualize_graph.py output/6454922_graph.json --show-steps 10
+
+# Full details
+python3 backend/app/scripts/visualize_graph.py output/6454922_graph.json \
+  --show-subassemblies --show-steps 10 --max-parts 5
+```
+
+### Output Files
+
+When a graph is generated, you get two files:
+
+1. **`{manual_id}_graph.json`** - Full hierarchical graph data (for system use)
+2. **`{manual_id}_graph_summary.txt`** - Human-readable summary (for verification)
+
+```bash
+# Review the summary
+cat output/6454922_graph_summary.txt
+```
+
+### Verify Graph Quality
+
+**Good Indicators:**
+- ✅ Subassembly names are descriptive (e.g., "Front Wheel Assembly")
+- ✅ Hierarchy depth > 1 (parts nested under subassemblies)
+- ✅ Completeness markers have sensible values
+- ✅ Matches manual structure when compared with PDF
+
+**Bad Indicators:**
+- ❌ Generic names like "Assembly from step 7"
+- ❌ Max depth = 0 (flat structure, all parts directly under root)
+- ❌ Every step creates a subassembly (over-detection)
+- ❌ No subassemblies detected (under-detection)
+
+**Example Good Hierarchy:**
+```
+📦 LEGO Model [root]
+├── 🔧 Vehicle Base [step 3]
+│   ├── 🔧 Front Wheel Assembly [step 5]
+│   │   ├── 🧱 black wheel
+│   │   └── 🧱 grey axle
+│   └── 🧱 black base plate
+└── 🔧 Vehicle Body [step 10]
+```
+
+### Test Graph Regeneration
+
+To test the enhanced graph builder with an existing manual:
+
+```bash
+# Regenerate graph with latest implementation
+python3 backend/app/scripts/test_graph_regeneration.py
+
+# This will:
+# - Load existing extracted steps for manual 6454922
+# - Rebuild graph with enhanced 2-stage system
+# - Generate summary files
+# - Compare with old graph (if exists)
+```
+
+### Debug Issues
+
+If graph quality is poor:
+
+1. **Check the logs** - Look for "Building Hierarchical Assembly Graph" section
+2. **Review summary file** - `cat output/{manual_id}_graph_summary.txt`
+3. **Visualize structure** - Use visualize_graph.py
+4. **Compare with manual PDF** - Verify detected subassemblies match actual structure
+
+**Common Issues:**
+
+- **No subassemblies**: Manual may be very simple, or detection heuristics too strict
+- **Too many subassemblies**: Detection heuristics too loose, every step creates one
+- **Flat hierarchy**: Parent-child relationships not being established correctly
+- **Wrong names**: Name inference not finding functional keywords
+
+See inline code comments in `src/plan_generation/graph_builder.py` for tuning options.
+
+---
+
 ## 🎓 Next Steps
 
 1. **Try multimodal queries**: Upload photos and ask vague questions
-2. **Process more manuals**: Run `uv run python main.py <url>` for other sets
-3. **Ingest them**: Run `uv run python -m app.scripts.ingest_manual <id>` (with multimodal embeddings)
-4. **Customize**: Edit prompts in `backend/app/rag/generator.py`
-5. **Explore**: Check API docs at http://localhost:8000/docs
-6. **Read more**: See `MULTIMODAL_IMPLEMENTATION_SUMMARY.md` for technical details
+2. **Try graph queries**: Ask about subassemblies and relationships 🧠 NEW
+3. **Process more manuals**: Run `uv run python main.py <url>` for other sets
+4. **Ingest them**: Run `uv run python -m app.scripts.ingest_manual <id>` (with multimodal embeddings)
+5. **Explore graph API**: Check `/api/manual/{id}/graph/*` endpoints
+6. **Customize**: Edit prompts in `backend/app/rag/generator.py`
+7. **Explore**: Check API docs at http://localhost:8000/docs
+8. **Read more**: See implementation docs:
+   - `MULTIMODAL_IMPLEMENTATION_SUMMARY.md` - Multimodal features
+   - `IMPLEMENTATION_COMPLETE.md` - Hierarchical graph 🧠 NEW
 
 ---
 
@@ -398,6 +604,6 @@ After setup, you have:
 
 ---
 
-**Quick Start Version**: 2.0.0  
+**Quick Start Version**: 2.1.0 (with Hierarchical Graph 🧠)  
 **Setup Time**: ~10 minutes  
 **Status**: Ready to use! 🎉

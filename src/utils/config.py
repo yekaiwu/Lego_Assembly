@@ -14,22 +14,41 @@ load_dotenv()
 
 class APIConfig(BaseModel):
     """API configuration for VLM services."""
+    # Chinese VLM API Keys
     dashscope_api_key: str = Field(default_factory=lambda: os.getenv("DASHSCOPE_API_KEY", ""))
     deepseek_api_key: str = Field(default_factory=lambda: os.getenv("DEEPSEEK_API_KEY", ""))
     moonshot_api_key: str = Field(default_factory=lambda: os.getenv("MOONSHOT_API_KEY", ""))
+    
+    # International VLM API Keys
+    openai_api_key: str = Field(default_factory=lambda: os.getenv("OPENAI_API_KEY", ""))
+    anthropic_api_key: str = Field(default_factory=lambda: os.getenv("ANTHROPIC_API_KEY", ""))
+    gemini_api_key: str = Field(default_factory=lambda: os.getenv("GEMINI_API_KEY", ""))
+    
+    # Other API Keys
     rebrickable_api_key: str = Field(default_factory=lambda: os.getenv("REBRICKABLE_API_KEY", ""))
     
+    # Chinese VLM Endpoints
     qwen_vl_endpoint: str = Field(default="https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation")
     deepseek_endpoint: str = Field(default="https://api.deepseek.com/v1")
     moonshot_endpoint: str = Field(default="https://api.moonshot.cn/v1")
+    
+    # International VLM Endpoints
+    openai_endpoint: str = Field(default_factory=lambda: os.getenv("OPENAI_ENDPOINT", "https://api.openai.com/v1"))
+    anthropic_endpoint: str = Field(default_factory=lambda: os.getenv("ANTHROPIC_ENDPOINT", "https://api.anthropic.com/v1"))
+    gemini_endpoint: str = Field(default_factory=lambda: os.getenv("GEMINI_ENDPOINT", "https://generativelanguage.googleapis.com/v1beta/models"))
+    
+    # Model names (configurable via env vars)
+    openai_model: str = Field(default_factory=lambda: os.getenv("OPENAI_MODEL", "gpt-4o"))
+    anthropic_model: str = Field(default_factory=lambda: os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-20241022"))
+    gemini_model: str = Field(default_factory=lambda: os.getenv("GEMINI_MODEL", "gemini-2.0-flash-exp"))
 
 class ModelConfig(BaseModel):
     """VLM model selection configuration."""
-    primary_vlm: str = Field(default="qwen-vl-max")
-    secondary_vlm: str = Field(default="deepseek-v2")
-    fallback_vlm: str = Field(default="kimi-vision")
-    max_retries: int = Field(default=3)
-    request_timeout: int = Field(default=60)
+    primary_vlm: str = Field(default_factory=lambda: os.getenv("PRIMARY_VLM", "qwen-vl-max"))
+    secondary_vlm: str = Field(default_factory=lambda: os.getenv("SECONDARY_VLM", "deepseek-v2"))
+    fallback_vlm: str = Field(default_factory=lambda: os.getenv("FALLBACK_VLM", "kimi-vision"))
+    max_retries: int = Field(default_factory=lambda: int(os.getenv("MAX_RETRIES", "3")))
+    request_timeout: int = Field(default_factory=lambda: int(os.getenv("REQUEST_TIMEOUT", "60")))
 
 class PathConfig(BaseModel):
     """File system path configuration."""

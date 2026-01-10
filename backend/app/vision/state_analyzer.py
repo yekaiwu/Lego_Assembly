@@ -13,6 +13,8 @@ project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 from src.api.qwen_vlm import QwenVLMClient
+from ..graph.graph_manager import get_graph_manager
+from .prompt_manager import PromptManager
 
 
 class StateAnalyzer:
@@ -21,7 +23,9 @@ class StateAnalyzer:
     def __init__(self):
         """Initialize with Phase 1 Qwen-VL client."""
         self.vlm_client = QwenVLMClient()
-        logger.info("StateAnalyzer initialized with Qwen-VL client")
+        self.graph_manager = get_graph_manager()
+        self.prompt_manager = PromptManager()
+        logger.info("StateAnalyzer initialized with Qwen-VL client, GraphManager, and PromptManager")
     
     def analyze_assembly_state(
         self,
@@ -88,7 +92,7 @@ class StateAnalyzer:
         context: Optional[str] = None
     ) -> str:
         """
-        Build VLM prompt for analyzing user's assembly photos.
+        Build VLM prompt for analyzing user's assembly photos using PromptManager.
         
         Args:
             manual_id: Manual identifier
@@ -97,63 +101,19 @@ class StateAnalyzer:
         Returns:
             Formatted prompt string
         """
-        base_prompt = """Analyze these photos of a partially-built LEGO model carefully.
-
-Extract the following information in JSON format:
-
-{
-  "detected_parts": [
-    {
-      "description": "detailed part description",
-      "color": "color name (e.g., red, blue, yellow)",
-      "shape": "brick type and dimensions (e.g., 2x4, 1x2, plate)",
-      "part_id": "LEGO part ID if identifiable (e.g., 3001, 3004)",
-      "quantity": <number of this part visible>,
-      "location": "where this part is located (top, bottom, left side, etc.)",
-      "confidence": <0.0-1.0 confidence score>
-    }
-  ],
-  "assembled_structures": [
-    {
-      "description": "description of assembled structure or subassembly",
-      "size": "approximate dimensions",
-      "completeness": "assessment of completion (partial, complete, etc.)"
-    }
-  ],
-  "connections": [
-    {
-      "part_a": "description of first part",
-      "part_b": "description of second part",
-      "connection_type": "how they are connected (stacked, side-by-side, etc.)",
-      "orientation": "relative orientation"
-    }
-  ],
-  "spatial_layout": {
-    "overall_shape": "description of overall assembly shape",
-    "front_view": "what's visible from front",
-    "top_view": "what's visible from top",
-    "complexity": "simple|moderate|complex"
-  },
-  "confidence": <overall confidence 0.0-1.0>,
-  "notes": "any special observations, unclear areas, or recommendations"
-}
-
-Important Guidelines:
-- Be as detailed and specific as possible about part colors, shapes, and sizes
-- If you see LEGO part numbers molded into pieces, include them
-- Describe how parts are connected together
-- Note any partial assemblies or loose parts
-- If multiple viewing angles are provided, synthesize information from all views
-- Estimate confidence based on image clarity and part visibility
-
-Analyze thoroughly and provide accurate, detailed results."""
-
+        # Use PromptManager with context variables
+        prompt_context = {
+            'manual_id': manual_id,
+            'expected_step': 'unknown',
+            'total_steps': 'unknown'
+        }
+        
+        prompt = self.prompt_manager.get_prompt('state_analysis', context=prompt_context)
+        
         if context:
-            base_prompt += f"\n\nAdditional Context: {context}"
+            prompt += f"\n\nAdditional Context: {context}"
         
-        base_prompt += f"\n\nManual ID: {manual_id}"
-        
-        return base_prompt
+        return prompt
     
     def _structure_analysis_result(self, vlm_result: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -256,6 +216,335 @@ Analyze thoroughly and provide accurate, detailed results."""
         description_parts.append(f"\nAnalysis confidence: {confidence * 100:.0f}%")
         
         return "\n".join(description_parts)
+    
+    def detect_subassemblies(
+        self,
+        image_paths: List[str],
+        manual_id: str
+    ) -> Dict[str, Any]:
+        """
+        Enhanced subassembly detection using part composition matching and completeness validation.
+        
+        Args:
+            image_paths: List of paths to user's assembly photos
+            manual_id: Manual identifier for graph lookup
+        
+        Returns:
+            Dictionary containing:
+                - detected_subassemblies: List of detected complete subassemblies
+                - partial_subassemblies: List of incomplete subassemblies
+                - estimated_step: Estimated current step
+                - step_confidence: Confidence of step estimation (0.0-1.0)
+        """
+        try:
+            logger.info(f"Detecting subassemblies for manual {manual_id} (enhanced mode)")
+            
+            # First, analyze the assembly state
+            analysis = self.analyze_assembly_state(
+                image_paths=image_paths,
+                manual_id=manual_id,
+                context="Identify distinct subassemblies or functional groups of connected parts. For each structure, list the specific parts that make it up."
+            )
+            
+            # Extract assembled structures
+            structures = analysis.get('assembled_structures', [])
+            detected_parts = analysis.get('detected_parts', [])
+            
+            if not structures:
+                logger.info("No subassemblies detected in images")
+                return {
+                    "detected_subassemblies": [],
+                    "partial_subassemblies": [],
+                    "estimated_step": None,
+                    "step_confidence": 0.0
+                }
+            
+            # Load graph
+            graph = self.graph_manager.load_graph(manual_id)
+            if not graph:
+                logger.warning(f"No graph found for manual {manual_id}, using basic matching")
+                return self._detect_subassemblies_fallback(structures, manual_id)
+            
+            # Enhanced matching: use part composition
+            detected_subassemblies = []
+            partial_subassemblies = []
+            
+            for structure in structures:
+                # Extract parts from structure description
+                component_parts = self._extract_parts_from_structure(structure, detected_parts)
+                
+                # Find matching subassembly in graph
+                match_result = self._match_structure_by_composition(
+                    structure=structure,
+                    component_parts=component_parts,
+                    graph=graph
+                )
+                
+                if match_result:
+                    subasm_node = match_result["node"]
+                    similarity = match_result["similarity"]
+                    
+                    # Validate completeness
+                    completeness_result = self._validate_completeness(
+                        structure=structure,
+                        component_parts=component_parts,
+                        subasm_node=subasm_node,
+                        detected_parts=detected_parts
+                    )
+                    
+                    subasm_info = {
+                        "subassembly_id": subasm_node["node_id"],
+                        "name": subasm_node["name"],
+                        "confidence": round(similarity * 0.7 + completeness_result["score"] * 0.3, 2),
+                        "completeness": completeness_result["completion_ratio"],
+                        "visible_parts": completeness_result["visible_parts"],
+                        "missing_parts": completeness_result["missing_parts"]
+                    }
+                    
+                    if completeness_result["completion_ratio"] > 0.9:
+                        detected_subassemblies.append(subasm_info)
+                        logger.debug(f"Complete subassembly: {subasm_info['name']} ({subasm_info['confidence']})")
+                    elif completeness_result["completion_ratio"] > 0.5:
+                        partial_subassemblies.append(subasm_info)
+                        logger.debug(f"Partial subassembly: {subasm_info['name']} ({completeness_result['completion_ratio']:.0%} complete)")
+            
+            # Estimate step from detected subassemblies
+            estimated_step = None
+            step_confidence = 0.0
+            
+            if detected_subassemblies:
+                # Use graph-aware estimation
+                max_step = max([
+                    self.graph_manager.get_node(manual_id, s["subassembly_id"]).get("step_created", 1)
+                    for s in detected_subassemblies
+                ])
+                estimated_step = max_step
+                step_confidence = sum(s["confidence"] for s in detected_subassemblies) / len(detected_subassemblies)
+            
+            logger.info(f"Enhanced detection: {len(detected_subassemblies)} complete, "
+                       f"{len(partial_subassemblies)} partial subassemblies")
+            
+            return {
+                "detected_subassemblies": detected_subassemblies,
+                "partial_subassemblies": partial_subassemblies,
+                "estimated_step": estimated_step,
+                "step_confidence": round(step_confidence, 2)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error detecting subassemblies: {e}")
+            return {
+                "detected_subassemblies": [],
+                "partial_subassemblies": [],
+                "estimated_step": None,
+                "step_confidence": 0.0,
+                "error": str(e)
+            }
+    
+    def _extract_parts_from_structure(
+        self,
+        structure: Dict[str, Any],
+        detected_parts: List[Dict[str, Any]]
+    ) -> List[str]:
+        """
+        Extract part signatures from structure description.
+        
+        Returns:
+            List of part signatures (color:shape)
+        """
+        structure_desc = structure.get("description", "").lower()
+        
+        # Try to find parts mentioned in description
+        component_parts = []
+        
+        for part in detected_parts:
+            color = part.get("color", "").lower()
+            shape = part.get("shape", "").lower()
+            
+            # Check if part is mentioned in structure description
+            if color in structure_desc and any(word in structure_desc for word in shape.split()):
+                signature = f"{color}:{shape}"
+                component_parts.append(signature)
+        
+        return component_parts
+    
+    def _match_structure_by_composition(
+        self,
+        structure: Dict[str, Any],
+        component_parts: List[str],
+        graph: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Match structure to subassembly using part composition (Jaccard similarity).
+        
+        Returns:
+            Dict with node and similarity score, or None
+        """
+        nodes = graph.get("nodes", [])
+        subassemblies = [n for n in nodes if n.get("type") == "subassembly"]
+        
+        if not subassemblies:
+            return None
+        
+        best_match = None
+        best_similarity = 0.0
+        
+        for subasm in subassemblies:
+            # Get part catalog to find component parts of this subassembly
+            subasm_component_parts = self._get_subassembly_component_parts(subasm, graph)
+            
+            if not subasm_component_parts:
+                continue
+            
+            # Calculate Jaccard similarity
+            detected_set = set(component_parts)
+            expected_set = set(subasm_component_parts)
+            
+            if not expected_set:
+                continue
+            
+            intersection = len(detected_set & expected_set)
+            union = len(detected_set | expected_set)
+            
+            jaccard = intersection / union if union > 0 else 0.0
+            
+            # Also check name similarity
+            structure_desc = structure.get("description", "").lower()
+            subasm_name = subasm.get("name", "").lower()
+            
+            name_overlap = len(set(structure_desc.split()) & set(subasm_name.split()))
+            name_score = min(name_overlap / 3, 1.0)  # Normalize
+            
+            # Combined score
+            similarity = jaccard * 0.7 + name_score * 0.3
+            
+            if similarity > best_similarity and similarity > 0.6:
+                best_similarity = similarity
+                best_match = {
+                    "node": subasm,
+                    "similarity": round(similarity, 2)
+                }
+        
+        return best_match
+    
+    def _get_subassembly_component_parts(
+        self,
+        subasm_node: Dict[str, Any],
+        graph: Dict[str, Any]
+    ) -> List[str]:
+        """Get component parts of a subassembly from graph."""
+        # Check completeness markers first
+        markers = subasm_node.get("completeness_markers", {})
+        if "component_parts" in markers:
+            return markers["component_parts"]
+        
+        # Fallback: get children that are parts
+        child_ids = subasm_node.get("children", [])
+        nodes = graph.get("nodes", [])
+        node_map = {n["node_id"]: n for n in nodes}
+        
+        component_parts = []
+        for child_id in child_ids:
+            child = node_map.get(child_id)
+            if child and child.get("type") == "part":
+                color = child.get("color", "")
+                shape = child.get("shape", "")
+                if color and shape:
+                    component_parts.append(f"{color}:{shape}")
+        
+        return component_parts
+    
+    def _validate_completeness(
+        self,
+        structure: Dict[str, Any],
+        component_parts: List[str],
+        subasm_node: Dict[str, Any],
+        detected_parts: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """
+        Validate subassembly completeness using completeness markers.
+        
+        Returns:
+            Dict with completion_ratio, visible_parts, missing_parts, score
+        """
+        markers = subasm_node.get("completeness_markers", {})
+        required_parts_count = markers.get("required_parts", len(component_parts))
+        
+        # Get expected component parts
+        expected_parts = self._get_subassembly_component_parts(subasm_node, {"nodes": [subasm_node]})
+        
+        # Check which parts are visible
+        detected_signatures = set(f"{p.get('color', '')}:{p.get('shape', '')}" for p in detected_parts)
+        expected_set = set(expected_parts) if expected_parts else set(component_parts)
+        
+        visible_parts = list(detected_signatures & expected_set)
+        missing_parts = list(expected_set - detected_signatures)
+        
+        # Calculate completion ratio
+        if expected_set:
+            completion_ratio = len(visible_parts) / len(expected_set)
+        else:
+            completion_ratio = 0.5  # Unknown
+        
+        # Calculate completeness score
+        score = completion_ratio
+        
+        return {
+            "completion_ratio": round(completion_ratio, 2),
+            "visible_parts": visible_parts,
+            "missing_parts": missing_parts,
+            "score": round(score, 2)
+        }
+    
+    def _detect_subassemblies_fallback(
+        self,
+        structures: List[Dict[str, Any]],
+        manual_id: str
+    ) -> Dict[str, Any]:
+        """Fallback method using fuzzy name matching."""
+        detected_subassemblies = []
+        partial_subassemblies = []
+        
+        for structure in structures:
+            description = structure.get('description', '').lower()
+            completeness = structure.get('completeness', 'unknown').lower()
+            
+            # Try to match to graph subassemblies
+            matched_nodes = self.graph_manager.get_node_by_name(
+                manual_id=manual_id,
+                name=description,
+                fuzzy=True
+            )
+            
+            # Filter to only subassembly nodes
+            subasm_nodes = [
+                n for n in matched_nodes 
+                if n.get('type') == 'subassembly'
+            ]
+            
+            if subasm_nodes:
+                matched_node = subasm_nodes[0]
+                
+                subasm_info = {
+                    "subassembly_id": matched_node["node_id"],
+                    "name": matched_node["name"],
+                    "confidence": 0.6,  # Lower confidence for fallback
+                    "completeness": completeness,
+                    "visible_parts": [],
+                    "missing_parts": []
+                }
+                
+                if 'complete' in completeness:
+                    detected_subassemblies.append(subasm_info)
+                else:
+                    partial_subassemblies.append(subasm_info)
+        
+        return {
+            "detected_subassemblies": detected_subassemblies,
+            "partial_subassemblies": partial_subassemblies,
+            "estimated_step": None,
+            "step_confidence": 0.0
+        }
 
 
 # Singleton instance
