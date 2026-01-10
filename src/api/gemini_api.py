@@ -225,30 +225,50 @@ Be detailed and precise."""
             candidates = response.get("candidates", [])
             if not candidates:
                 raise ValueError("No candidates in API response")
-            
+
             content = candidates[0].get("content", {})
             parts = content.get("parts", [])
-            
+
             if not parts:
                 raise ValueError("No parts in response content")
-            
+
             # Extract text from parts
             text_content = ""
             for part in parts:
                 if "text" in part:
                     text_content += part["text"]
-            
+
             if use_json_mode:
                 # Parse JSON response
                 if text_content:
-                    return json.loads(text_content)
+                    try:
+                        return json.loads(text_content)
+                    except json.JSONDecodeError as e:
+                        logger.error(f"JSON parsing failed: {e}")
+                        logger.error(f"Raw text content (first 500 chars): {text_content[:500]}")
+                        logger.error(f"Raw text content (last 500 chars): {text_content[-500:]}")
+
+                        # Try to fix common JSON issues
+                        try:
+                            # Sometimes Gemini returns JSON with markdown code blocks
+                            if "```json" in text_content:
+                                text_content = text_content.split("```json")[1].split("```")[0].strip()
+                                return json.loads(text_content)
+                            elif "```" in text_content:
+                                text_content = text_content.split("```")[1].split("```")[0].strip()
+                                return json.loads(text_content)
+                        except:
+                            pass
+
+                        # Return error with the raw text for debugging
+                        return {"error": f"JSON parse error: {str(e)}", "raw_text": text_content}
                 else:
                     return {"error": "Empty response"}
             else:
                 # Return as-is for text responses
                 return {"raw_text": text_content}
-        
-        except (json.JSONDecodeError, KeyError, ValueError) as e:
+
+        except (KeyError, ValueError) as e:
             logger.error(f"Failed to parse API response: {e}")
             logger.debug(f"Response structure: {response}")
             return {"error": str(e), "raw_response": response}

@@ -79,12 +79,12 @@ def main(
     skip_ingestion: bool = False,
     use_multimodal: bool = True,
     resume: bool = True,
-    batch_size: int = 10
+    batch_size: int = 1
 ):
     """
     Main workflow: Process LEGO manual, generate plan, and ingest into vector store.
     Supports checkpointing to resume interrupted processing.
-    
+
     Args:
         input_path: Path to PDF manual, image directory, or URL
         output_dir: Directory for output files
@@ -94,7 +94,7 @@ def main(
         skip_ingestion: Skip Phase 2 (vector store ingestion)
         use_multimodal: Use multimodal embeddings in ingestion
         resume: Resume from checkpoint if available
-        batch_size: Number of steps to process per API call (default: 10, reduces rate limiting)
+        batch_size: Number of steps to process per API call (default: 1 for reliability)
     """
     logger.info("=" * 80)
     logger.info("LEGO Assembly System - Complete Workflow")
