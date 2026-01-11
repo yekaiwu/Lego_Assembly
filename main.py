@@ -12,7 +12,12 @@ from typing import Optional, Dict, Any
 from loguru import logger
 
 from src.vision_processing import ManualInputHandler, VLMStepExtractor, DependencyGraph
-from src.vision_processing.document_analyzer import DocumentAnalyzer
+from src.vision_processing.user_metadata_collector import UserMetadataCollector
+from src.vision_processing.metadata_models import UserProvidedMetadata
+from src.vision_processing.document_analyzer import (
+    convert_user_metadata_to_document_metadata,
+    extract_relevant_pages
+)
 from src.plan_generation import PlanStructureGenerator, GraphBuilder
 from src.utils import get_config, URLHandler
 
@@ -160,28 +165,19 @@ def main(
         manual_handler = ManualInputHandler(output_dir=output_dir / "temp_pages")
         page_paths = sorted(list((output_dir / "temp_pages").glob("page_*.png")))
 
-    # Step 2 (NEW): Phase 0 - Document Understanding
-    if not checkpoint.is_step_complete("document_analysis"):
-        logger.info("Step 2/7: Analyzing document structure (Phase 0)...")
+    # Step 2 (UPDATED): User-Provided Metadata Collection
+    if not checkpoint.is_step_complete("metadata_collection"):
+        logger.info("Step 2/7: Collecting manual metadata from user...")
+        logger.info("")
 
-        # Get VLM client for document analysis (use Gemini for consistency)
-        from src.api.gemini_api import GeminiVisionClient
-        vlm_client = GeminiVisionClient()
+        # Create metadata collector
+        collector = UserMetadataCollector(total_pages=len(page_paths))
 
-        doc_analyzer = DocumentAnalyzer(vlm_client)
-        doc_metadata = doc_analyzer.analyze_pdf(page_paths)
+        # Collect metadata interactively
+        user_metadata = collector.collect_metadata_interactive()
 
-        logger.info(f"Identified: {doc_metadata.main_build}")
-        logger.info(f"Instruction pages: {sum(1 for c in doc_metadata.page_classification.values() if c == 'instruction')} of {doc_metadata.total_pages}")
-        logger.info(f"Estimated steps: {doc_metadata.total_steps}")
-
-        # Get user confirmation
-        if not doc_analyzer.get_user_confirmation(doc_metadata):
-            logger.info("User cancelled. Exiting.")
-            return
-
-        # Filter to only relevant pages
-        relevant_page_paths = doc_analyzer.extract_relevant_pages(page_paths, doc_metadata)
+        # Filter to only instruction pages
+        relevant_page_paths = extract_relevant_pages(page_paths, user_metadata)
 
         logger.info(f"Filtered: {len(page_paths)} → {len(relevant_page_paths)} instruction pages")
 
@@ -190,24 +186,23 @@ def main(
         logger.info(f"Detected {len(step_groups)} assembly steps")
         logger.info("")
 
-        checkpoint.save("document_analysis", {
-            "metadata": doc_metadata.to_dict(),
+        checkpoint.save("metadata_collection", {
+            "metadata": user_metadata.to_dict(),
             "relevant_page_count": len(relevant_page_paths),
             "step_count": len(step_groups)
         })
     else:
-        logger.info("Step 2/7: ✓ Document analysis already complete (skipping)")
+        logger.info("Step 2/7: ✓ Metadata collection already complete (skipping)")
         # Load from checkpoint
         checkpoint_data = checkpoint.load()
-        from src.vision_processing.document_analyzer import DocumentMetadata
-        doc_metadata = DocumentMetadata.from_dict(checkpoint_data["metadata"])
+        user_metadata = UserProvidedMetadata.from_dict(checkpoint_data["metadata"])
 
         # Re-extract relevant pages
-        from src.api.gemini_api import GeminiVisionClient
-        vlm_client = GeminiVisionClient()
-        doc_analyzer = DocumentAnalyzer(vlm_client)
-        relevant_page_paths = doc_analyzer.extract_relevant_pages(page_paths, doc_metadata)
+        relevant_page_paths = extract_relevant_pages(page_paths, user_metadata)
         step_groups = manual_handler.detect_step_boundaries(relevant_page_paths)
+
+    # Convert to legacy DocumentMetadata for compatibility with Phase 1
+    doc_metadata = convert_user_metadata_to_document_metadata(user_metadata)
     
     # Step 3 (ENHANCED): Phase 1 - Context-Aware Step Extraction
     if not checkpoint.is_step_complete("step_extraction"):
