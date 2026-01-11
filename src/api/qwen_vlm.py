@@ -259,17 +259,7 @@ Be detailed and precise."""
             
             # Return as data URI
             return f"data:{mime_type};base64,{base64_str}"
-        
+
         except Exception as e:
             logger.error(f"Failed to encode image {image_path}: {e}")
             raise
-    
-    def batch_extract(self, image_batches: List[List[str]]) -> List[Dict[str, Any]]:
-        """Extract information from multiple steps in batch."""
-        results = []
-        for i, image_paths in enumerate(image_batches):
-            logger.info(f"Processing batch {i + 1}/{len(image_batches)}")
-            result = self.extract_step_info(image_paths, step_number=i + 1)
-            results.append(result)
-        return results
-

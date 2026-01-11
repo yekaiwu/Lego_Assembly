@@ -84,8 +84,7 @@ def main(
     display_output: bool = True,
     skip_ingestion: bool = False,
     use_multimodal: bool = True,
-    resume: bool = True,
-    batch_size: int = 1
+    resume: bool = True
 ):
     """
     Main workflow: Process LEGO manual, generate plan, and ingest into vector store.
@@ -100,7 +99,6 @@ def main(
         skip_ingestion: Skip Phase 2 (vector store ingestion)
         use_multimodal: Use multimodal embeddings in ingestion
         resume: Resume from checkpoint if available
-        batch_size: Number of steps to process per API call (default: 1 for reliability)
     """
     logger.info("=" * 80)
     logger.info("LEGO Assembly System - Complete Workflow")
@@ -217,13 +215,19 @@ def main(
         )
         logger.info(f"Initialized context-aware extraction for: {doc_metadata.main_build}")
 
-        # Use assembly_id as cache context to prevent cache collisions between different manuals
-        extracted_steps = vlm_extractor.batch_extract(
-            step_groups,
-            use_primary=not use_fallback,
-            cache_context=assembly_id,
-            batch_size=batch_size
-        )
+        # Process each step individually
+        extracted_steps = []
+        total_steps = len(step_groups)
+        for i, image_paths in enumerate(step_groups):
+            step_num = i + 1
+            logger.info(f"Processing step {step_num}/{total_steps}")
+            result = vlm_extractor.extract_step(
+                image_paths,
+                step_number=step_num,
+                use_primary=not use_fallback,
+                cache_context=assembly_id
+            )
+            extracted_steps.append(result)
         logger.info(f"Extracted information from {len(extracted_steps)} steps (with context)")
 
         # Save extracted data
@@ -450,14 +454,7 @@ if __name__ == "__main__":
         action="store_true",
         help="Enable caching of VLM responses (disabled by default)"
     )
-    
-    parser.add_argument(
-        "--batch-size",
-        type=int,
-        default=10,
-        help="Number of steps to process per API call (default: 10, reduces rate limiting)"
-    )
-    
+
     parser.add_argument(
         "--log-level",
         type=str,
@@ -526,8 +523,7 @@ if __name__ == "__main__":
             display_output=not args.no_display,
             skip_ingestion=args.skip_ingestion,
             use_multimodal=not args.no_multimodal,
-            resume=not args.no_resume,
-            batch_size=args.batch_size
+            resume=not args.no_resume
         )
     except Exception as e:
         logger.exception(f"Error during execution: {e}")

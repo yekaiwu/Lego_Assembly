@@ -226,6 +226,23 @@ Be detailed and precise."""
             if not candidates:
                 raise ValueError("No candidates in API response")
 
+            # CHECK FINISH REASON - Critical for debugging truncated responses
+            finish_reason = candidates[0].get("finishReason", "UNKNOWN")
+            if finish_reason != "STOP":
+                logger.warning(f"Generation finished with reason: {finish_reason} (expected: STOP)")
+                # Log safety ratings if present
+                safety_ratings = candidates[0].get("safetyRatings", [])
+                if safety_ratings:
+                    logger.warning(f"Safety ratings: {safety_ratings}")
+
+            # LOG TOKEN USAGE - Critical for identifying token limit issues
+            usage_metadata = response.get("usageMetadata", {})
+            if usage_metadata:
+                prompt_tokens = usage_metadata.get("promptTokenCount", 0)
+                candidates_tokens = usage_metadata.get("candidatesTokenCount", 0)
+                total_tokens = usage_metadata.get("totalTokenCount", 0)
+                logger.debug(f"Token usage: prompt={prompt_tokens}, response={candidates_tokens}, total={total_tokens}")
+
             content = candidates[0].get("content", {})
             parts = content.get("parts", [])
 
@@ -260,8 +277,12 @@ Be detailed and precise."""
                         except:
                             pass
 
-                        # Return error with the raw text for debugging
-                        return {"error": f"JSON parse error: {str(e)}", "raw_text": text_content}
+                        # Include finish reason in error for debugging
+                        return {
+                            "error": f"JSON parse error: {str(e)}",
+                            "raw_text": text_content,
+                            "finish_reason": finish_reason
+                        }
                 else:
                     return {"error": "Empty response"}
             else:
