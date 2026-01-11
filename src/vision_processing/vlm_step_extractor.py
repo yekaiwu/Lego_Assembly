@@ -56,6 +56,8 @@ class VLMStepExtractor:
             "gemini-1.5-flash": GeminiVisionClient(),
             "gemini-1.5-flash-latest": GeminiVisionClient(),
             "gemini-pro-vision": GeminiVisionClient(),
+            "gemini-exp-1206": GeminiVisionClient(),  # DEPRECATED - aliased to gemini-2.0-pro-exp
+            "gemini-robotics-er-1.5-preview": GeminiVisionClient(),  # Robotics-ER 1.5 (CORRECT NAME)
         }
         
         logger.info(f"VLM Step Extractor initialized with primary: {self.primary_vlm}")

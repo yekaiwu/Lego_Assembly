@@ -9,8 +9,8 @@ from typing import Optional
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
-# Load environment variables
-load_dotenv()
+# Load environment variables with override to ensure .env takes precedence
+load_dotenv(override=True)
 
 class APIConfig(BaseModel):
     """API configuration for VLM services."""

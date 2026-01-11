@@ -13,6 +13,7 @@ project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 from src.api.qwen_vlm import QwenVLMClient
+from src.utils.config import get_config
 
 # Import PromptManager from backend
 backend_path = project_root / "backend"
@@ -87,10 +88,21 @@ class PartAssociationModule:
     Analyzes manual pages to identify all unique parts and assign roles.
     """
     
-    def __init__(self):
-        self.vlm_client = QwenVLMClient()
+    def __init__(self, vlm_client=None):
+        # Use provided VLM client or get from VLMStepExtractor's client registry
+        if vlm_client is None:
+            # Import here to avoid circular dependency
+            from src.vision_processing.vlm_step_extractor import VLMStepExtractor
+            config = get_config()
+            extractor = VLMStepExtractor()
+            primary_vlm = config.models.primary_vlm
+            self.vlm_client = extractor.clients.get(primary_vlm, QwenVLMClient())
+            logger.info(f"PartAssociationModule initialized with PRIMARY_VLM: {primary_vlm}")
+        else:
+            self.vlm_client = vlm_client
+            logger.info("PartAssociationModule initialized with provided VLM client")
+        
         self.prompt_manager = PromptManager()
-        logger.info("PartAssociationModule initialized with PromptManager")
     
     def build_part_catalog(
         self,

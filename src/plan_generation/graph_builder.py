@@ -343,9 +343,21 @@ class GraphBuilder:
     Builds hierarchical assembly graph following Manual2Skill's 2-stage approach.
     """
     
-    def __init__(self):
-        self.vlm_client = QwenVLMClient()
-        self.part_association = PartAssociationModule()
+    def __init__(self, vlm_client=None):
+        # Use provided VLM client or get from config
+        if vlm_client is None:
+            from src.vision_processing.vlm_step_extractor import VLMStepExtractor
+            from src.utils.config import get_config
+            config = get_config()
+            extractor = VLMStepExtractor()
+            primary_vlm = config.models.primary_vlm
+            self.vlm_client = extractor.clients.get(primary_vlm, QwenVLMClient())
+            logger.info(f"GraphBuilder initialized with PRIMARY_VLM: {primary_vlm}")
+        else:
+            self.vlm_client = vlm_client
+            logger.info("GraphBuilder initialized with provided VLM client")
+        
+        self.part_association = PartAssociationModule(vlm_client=self.vlm_client)
         self.subassembly_detector = SubassemblyDetector(self.vlm_client)
         self.state_tracker = StepStateTracker()
         logger.info("GraphBuilder initialized with 2-stage hierarchical construction")

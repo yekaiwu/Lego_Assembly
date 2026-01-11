@@ -13,6 +13,7 @@ project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 from src.api.qwen_vlm import QwenVLMClient
+from src.utils.config import get_config as get_phase1_config
 from ..graph.graph_manager import get_graph_manager
 from .prompt_manager import PromptManager
 
@@ -20,12 +21,22 @@ from .prompt_manager import PromptManager
 class StateAnalyzer:
     """Analyzes user's physical assembly state from photos."""
     
-    def __init__(self):
-        """Initialize with Phase 1 Qwen-VL client."""
-        self.vlm_client = QwenVLMClient()
+    def __init__(self, vlm_client=None):
+        """Initialize with Phase 1 VLM client."""
+        if vlm_client is None:
+            # Use PRIMARY_VLM from Phase 1 config
+            from src.vision_processing.vlm_step_extractor import VLMStepExtractor
+            config = get_phase1_config()
+            extractor = VLMStepExtractor()
+            primary_vlm = config.models.primary_vlm
+            self.vlm_client = extractor.clients.get(primary_vlm, QwenVLMClient())
+            logger.info(f"StateAnalyzer initialized with PRIMARY_VLM: {primary_vlm}")
+        else:
+            self.vlm_client = vlm_client
+            logger.info("StateAnalyzer initialized with provided VLM client")
+        
         self.graph_manager = get_graph_manager()
         self.prompt_manager = PromptManager()
-        logger.info("StateAnalyzer initialized with Qwen-VL client, GraphManager, and PromptManager")
     
     def analyze_assembly_state(
         self,

@@ -13,20 +13,29 @@ project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 from src.api.qwen_vlm import QwenVLMClient
+from src.utils.config import get_config as get_phase1_config
 
 
 class MultimodalProcessor:
     """
     Processes diagram images to generate text descriptions for embedding.
     
-    Since Qwen doesn't provide direct image embedding API, we use Qwen-VL
-    to generate rich text descriptions of diagrams, then embed those descriptions.
+    Uses configured VLM to generate rich text descriptions of diagrams, then embed those descriptions.
     """
     
-    def __init__(self):
-        """Initialize with Qwen-VL client."""
-        self.vlm_client = QwenVLMClient()
-        logger.info("MultimodalProcessor initialized with Qwen-VL client")
+    def __init__(self, vlm_client=None):
+        """Initialize with configured VLM client."""
+        if vlm_client is None:
+            # Use PRIMARY_VLM from Phase 1 config
+            from src.vision_processing.vlm_step_extractor import VLMStepExtractor
+            config = get_phase1_config()
+            extractor = VLMStepExtractor()
+            primary_vlm = config.models.primary_vlm
+            self.vlm_client = extractor.clients.get(primary_vlm, QwenVLMClient())
+            logger.info(f"MultimodalProcessor initialized with PRIMARY_VLM: {primary_vlm}")
+        else:
+            self.vlm_client = vlm_client
+            logger.info("MultimodalProcessor initialized with provided VLM client")
     
     def generate_diagram_description(
         self,
