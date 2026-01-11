@@ -76,9 +76,63 @@ class QwenVLMClient:
         
         # Cache result
         self.cache.set("qwen-vl-max", cache_key, result, image_paths)
-        
+
         return result
-    
+
+    def extract_step_info_with_context(
+        self,
+        image_paths: List[str],
+        step_number: Optional[int] = None,
+        custom_prompt: Optional[str] = None,
+        use_json_mode: bool = True,
+        cache_context: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Extract step info with custom context-aware prompt.
+
+        Args:
+            image_paths: List of paths to step images
+            step_number: Optional step number for context
+            custom_prompt: Custom prompt (overrides default)
+            use_json_mode: Whether to request JSON formatted output
+            cache_context: Optional context string to differentiate cache entries
+
+        Returns:
+            Extracted step information
+        """
+        # Check cache first
+        cache_suffix = f":{cache_context}" if cache_context else ""
+        cache_key = f"qwen-vl-max:{','.join(image_paths)}:{step_number}{cache_suffix}"
+        cached = self.cache.get("qwen-vl-max", cache_key, image_paths)
+        if cached:
+            return cached
+
+        # Use custom prompt if provided, otherwise build default
+        if custom_prompt:
+            prompt = custom_prompt
+        else:
+            prompt = self._build_extraction_prompt(step_number, use_json_mode)
+
+        # Prepare multi-modal content
+        content = [{"text": prompt}]
+        for img_path in image_paths:
+            if img_path.startswith('http://') or img_path.startswith('https://'):
+                content.append({"image": img_path})
+            else:
+                image_data = self._encode_image_to_base64(img_path)
+                content.append({"image": image_data})
+
+        # Make API call with retry logic
+        response = self._call_api_with_retry(content, use_json_mode)
+
+        # Parse response
+        result = self._parse_response(response, use_json_mode)
+
+        # Cache result
+        self.cache.set("qwen-vl-max", cache_key, result, image_paths)
+
+        return result
+
     def _build_extraction_prompt(self, step_number: Optional[int], use_json_mode: bool) -> str:
         """Build the extraction prompt for VLM."""
         step_context = f"Step {step_number}: " if step_number else ""

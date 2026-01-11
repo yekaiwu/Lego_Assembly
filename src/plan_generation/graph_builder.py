@@ -93,10 +93,10 @@ class SubassemblyDetector:
         # Heuristic 1: Functional grouping
         parts = step.get("parts_required", [])
         actions = step.get("actions", [])
-        
+
         # Look for functional keywords in descriptions
         functional_keywords = ["wheel", "wing", "base", "body", "roof", "door", "window", "frame"]
-        notes = step.get("notes", "").lower()
+        notes = (step.get("notes") or "").lower()  # Handle None explicitly
         
         has_functional_parts = any(
             any(kw in part.get("shape", "").lower() or kw in part.get("description", "").lower() 

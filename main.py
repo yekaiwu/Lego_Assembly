@@ -210,7 +210,7 @@ def main(
         # NEW: Initialize context-aware memory
         vlm_extractor.initialize_memory(
             main_build=doc_metadata.main_build,
-            window_size=5,  # Remember last 5 steps
+            window_size=2,  # Remember last 2 steps (reduced from 5 for faster processing)
             max_tokens=1_000_000  # Gemini 2.5 Flash has 1M context window
         )
         logger.info(f"Initialized context-aware extraction for: {doc_metadata.main_build}")

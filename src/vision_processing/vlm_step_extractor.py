@@ -304,10 +304,15 @@ IMPORTANT INSTRUCTIONS:
 1. Consider the build context and recent steps when analyzing this image
 2. If this step references previous work (e.g., "attach to base"), identify which step in "context_references"
 3. Determine if this is starting a new subassembly or continuing the current one
-4. If the image shows parts already assembled in previous steps, mention them in "existing_assembly"
-5. Focus on what's NEW in this step, not what was already built
+4. Focus on what's NEW in this step, not what was already built
 
-Be detailed and precise. If information is unclear, mark as null or "unclear".
+RESPONSE CONSTRAINTS (CRITICAL):
+- Keep descriptions CONCISE (max 10-15 words per field)
+- Use short phrases, not full sentences
+- Prioritize accuracy over detail
+- If information is unclear, mark as null or "unclear"
+- Limit "actions" array to 3 most important actions
+- Keep "existing_assembly" under 20 words
 """)
 
         return "\n".join(prompt_parts)

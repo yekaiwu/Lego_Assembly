@@ -166,7 +166,7 @@ Be detailed and precise."""
             ],
             "generationConfig": {
                 "temperature": 0.1,
-                "maxOutputTokens": 8192
+                "maxOutputTokens": 65536
             }
         }
         

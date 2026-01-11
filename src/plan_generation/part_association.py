@@ -249,19 +249,14 @@ class PartAssociationModule:
         
         # Build prompt for role assignment
         prompt = self._build_role_assignment_prompt(parts)
-        
-        # Call VLM with sample pages (limit to 4-6 images)
-        content = [{"text": prompt}]
-        for page_path in sample_pages[:6]:
-            if page_path.startswith('http://') or page_path.startswith('https://'):
-                content.append({"image": page_path})
-            else:
-                image_data = self.vlm_client._encode_image_to_base64(page_path)
-                content.append({"image": image_data})
-        
+
+        # Use provider-agnostic method to call VLM with custom prompt
         try:
-            response = self.vlm_client._call_api_with_retry(content, use_json_mode=True)
-            result = self.vlm_client._parse_response(response, use_json_mode=True)
+            result = self._call_vlm_with_custom_prompt(
+                prompt=prompt,
+                image_paths=sample_pages[:6],
+                use_json_mode=True
+            )
             
             # Parse role assignments
             role_assignments = result.get("part_roles", [])
@@ -284,7 +279,40 @@ class PartAssociationModule:
             logger.warning(f"VLM role assignment failed: {e}. Using heuristics.")
             # Fallback: use heuristic role assignment
             return [self._assign_role_heuristic(p) for p in parts]
-    
+
+    def _call_vlm_with_custom_prompt(
+        self,
+        prompt: str,
+        image_paths: List[str],
+        use_json_mode: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Provider-agnostic VLM call with custom prompt and images.
+        Handles different API formats for Gemini, OpenAI, Claude, etc.
+        """
+        client_type = type(self.vlm_client).__name__
+
+        # Use the public extract_step_info_with_context method if available
+        if hasattr(self.vlm_client, 'extract_step_info_with_context'):
+            return self.vlm_client.extract_step_info_with_context(
+                image_paths=image_paths,
+                custom_prompt=prompt,
+                use_json_mode=use_json_mode
+            )
+
+        # Fallback: use extract_step_info with step_number=None
+        # (Not ideal but works for simple cases)
+        elif hasattr(self.vlm_client, 'extract_step_info'):
+            logger.warning(f"{client_type} doesn't support custom prompts, using standard extraction")
+            return self.vlm_client.extract_step_info(
+                image_paths=image_paths,
+                step_number=None,
+                use_json_mode=use_json_mode
+            )
+
+        else:
+            raise NotImplementedError(f"VLM client {client_type} doesn't support required methods")
+
     def _build_role_assignment_prompt(self, parts: List[Dict[str, Any]]) -> str:
         """Build VLM prompt for role assignment using PromptManager."""
         # Build parts list for context
