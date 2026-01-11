@@ -215,26 +215,67 @@ def main(
         )
         logger.info(f"Initialized context-aware extraction for: {doc_metadata.main_build}")
 
-        # Process each step individually
+        # Check for partially completed extraction (incremental save file)
+        temp_extracted_path = output_dir / f"{assembly_id}_extracted_temp.json"
         extracted_steps = []
+        start_step = 1
+        
+        if temp_extracted_path.exists():
+            try:
+                with open(temp_extracted_path, 'r', encoding='utf-8') as f:
+                    extracted_steps = json.load(f)
+                start_step = len(extracted_steps) + 1
+                logger.info(f"Resuming from step {start_step} (found {len(extracted_steps)} cached steps)")
+                
+                # Restore context memory with previous steps
+                for step_data in extracted_steps:
+                    vlm_extractor.context_memory.add_step(step_data)
+            except Exception as e:
+                logger.warning(f"Failed to load temp extraction file: {e}. Starting from scratch.")
+                extracted_steps = []
+                start_step = 1
+
+        # Process each step individually (starting from last saved step)
         total_steps = len(step_groups)
-        for i, image_paths in enumerate(step_groups):
+        for i in range(start_step - 1, total_steps):
             step_num = i + 1
+            image_paths = step_groups[i]
             logger.info(f"Processing step {step_num}/{total_steps}")
-            result = vlm_extractor.extract_step(
-                image_paths,
-                step_number=step_num,
-                use_primary=not use_fallback,
-                cache_context=assembly_id
-            )
-            extracted_steps.append(result)
+            
+            try:
+                result = vlm_extractor.extract_step(
+                    image_paths,
+                    step_number=step_num,
+                    use_primary=not use_fallback,
+                    cache_context=assembly_id
+                )
+                extracted_steps.append(result)
+                
+                # INCREMENTAL SAVE: Save progress after each successful step
+                with open(temp_extracted_path, 'w', encoding='utf-8') as f:
+                    json.dump(extracted_steps, f, indent=2, ensure_ascii=False)
+                logger.debug(f"Saved progress: {len(extracted_steps)}/{total_steps} steps")
+                
+            except Exception as e:
+                logger.error(f"Error extracting step {step_num}: {e}")
+                # Save progress even on error, then re-raise
+                with open(temp_extracted_path, 'w', encoding='utf-8') as f:
+                    json.dump(extracted_steps, f, indent=2, ensure_ascii=False)
+                logger.info(f"Progress saved. {len(extracted_steps)}/{total_steps} steps completed before error.")
+                raise
+                
         logger.info(f"Extracted information from {len(extracted_steps)} steps (with context)")
 
-        # Save extracted data
+        # Save final extracted data
         extracted_path = output_dir / f"{assembly_id}_extracted.json"
         with open(extracted_path, 'w', encoding='utf-8') as f:
             json.dump(extracted_steps, f, indent=2, ensure_ascii=False)
         logger.info(f"Saved extracted data to {extracted_path}")
+        
+        # Clean up temp file after successful completion
+        if temp_extracted_path.exists():
+            temp_extracted_path.unlink()
+            logger.debug("Removed temporary extraction file")
         logger.info("")
 
         checkpoint.save("step_extraction")

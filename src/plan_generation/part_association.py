@@ -207,8 +207,9 @@ class PartAssociationModule:
             # Check if this step has actual parts
             has_parts = len(step.get("parts_required", [])) > 0
             has_actions = len(step.get("actions", [])) > 0
-            is_cover = "cover" in step.get("notes", "").lower()
-            is_ad = any(keyword in step.get("notes", "").lower() 
+            notes = step.get("notes") or ""
+            is_cover = "cover" in notes.lower()
+            is_ad = any(keyword in notes.lower() 
                        for keyword in ["advertisement", "promotional", "lego.com", "visit"])
             
             if (has_parts or has_actions) and not is_cover and not is_ad:

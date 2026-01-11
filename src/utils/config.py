@@ -67,7 +67,7 @@ class SystemConfig(BaseModel):
     api: APIConfig = Field(default_factory=APIConfig)
     models: ModelConfig = Field(default_factory=ModelConfig)
     paths: PathConfig = Field(default_factory=PathConfig)
-    cache_enabled: bool = Field(default=False)  # Disabled by default to ensure fresh processing
+    cache_enabled: bool = Field(default_factory=lambda: os.getenv("CACHE_ENABLED", "true").lower() == "true")  # Enabled by default to prevent data loss
 
 # Global config instance
 config = SystemConfig()
