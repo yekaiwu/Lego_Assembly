@@ -235,6 +235,7 @@ def main(
                 extracted_steps = []
                 start_step = 1
 
+        # Process each page (pages may contain multiple steps)
         total_pages = len(step_groups)
         for i in range(start_step - 1, total_pages):
             page_num = i + 1
