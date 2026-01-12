@@ -39,7 +39,7 @@ def test_cache_functionality():
     # Test data
     test_model = "test-model"
     test_prompt = "Test prompt for caching verification"
-    test_images = ["output/temp_pages/page_001.png"]
+    test_images = ["../output/temp_pages/page_001.png"]
     test_response = {
         "step_number": 1,
         "parts_required": [{"description": "test part", "color": "red"}],
@@ -116,7 +116,7 @@ def test_cache_functionality():
         print("⚠️  Skipping: No GEMINI_API_KEY found")
     else:
         # Check if test image exists
-        test_image = Path("output/temp_pages/page_001.png")
+        test_image = Path("../output/temp_pages/page_001.png")
         if not test_image.exists():
             print(f"⚠️  Skipping: Test image not found at {test_image}")
         else:
@@ -206,4 +206,3 @@ if __name__ == "__main__":
         import traceback
         traceback.print_exc()
         exit(1)
-

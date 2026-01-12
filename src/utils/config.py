@@ -44,9 +44,18 @@ class APIConfig(BaseModel):
 
 class ModelConfig(BaseModel):
     """VLM model selection configuration."""
-    primary_vlm: str = Field(default_factory=lambda: os.getenv("PRIMARY_VLM", "qwen-vl-max"))
-    secondary_vlm: str = Field(default_factory=lambda: os.getenv("SECONDARY_VLM", "deepseek-v2"))
-    fallback_vlm: str = Field(default_factory=lambda: os.getenv("FALLBACK_VLM", "kimi-vision"))
+    # Phase 1: Ingestion VLMs (for extracting steps from instruction pages)
+    ingestion_vlm: str = Field(default_factory=lambda: os.getenv("INGESTION_VLM", "gemini-robotics-er-1.5-preview"))
+    ingestion_secondary_vlm: str = Field(default_factory=lambda: os.getenv("INGESTION_SECONDARY_VLM", "gpt-4o-mini"))
+    ingestion_fallback_vlm: str = Field(default_factory=lambda: os.getenv("INGESTION_FALLBACK_VLM", "gemini-2.5-flash"))
+
+    # Backend: Diagram VLM (for generating diagram descriptions)
+    diagram_vlm: str = Field(default_factory=lambda: os.getenv("DIAGRAM_VLM", "gemini-robotics-er-1.5-preview"))
+
+    # Embedding VLM (for generating embeddings)
+    embedding_vlm: str = Field(default_factory=lambda: os.getenv("EMBEDDING_VLM", "gemini-2.5-flash"))
+
+    # General settings
     max_retries: int = Field(default_factory=lambda: int(os.getenv("MAX_RETRIES", "3")))
     request_timeout: int = Field(default_factory=lambda: int(os.getenv("REQUEST_TIMEOUT", "60")))
 

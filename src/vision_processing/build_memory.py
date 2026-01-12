@@ -47,10 +47,10 @@ class SlidingWindowMemory:
     Provides immediate context for current step.
     """
 
-    def __init__(self, window_size: int = 5):
+    def __init__(self, window_size: int = 2):
         """
         Args:
-            window_size: Number of previous steps to remember (default: 5)
+            window_size: Number of previous steps to remember (default: 2)
         """
         self.window_size = window_size
         self.window: deque[StepSummary] = deque(maxlen=window_size)
@@ -164,7 +164,7 @@ class BuildMemory:
     Provides unified interface for context-aware extraction.
     """
 
-    def __init__(self, main_build: str, window_size: int = 5):
+    def __init__(self, main_build: str, window_size: int = 2):
         self.sliding_window = SlidingWindowMemory(window_size)
         self.long_term = LongTermMemory(main_build)
 

@@ -136,7 +136,7 @@ Proceed with processing these instruction pages? (y/n):
 ```
 
 **🧠 Phase 1: Context-Aware Benefits**
-- Sliding window tracks last 5 steps (~1,500 tokens per extraction)
+- Sliding window tracks last 2 steps (~600 tokens per extraction)
 - Long-term memory maintains overall build state (~500 tokens)
 - Enhanced extraction includes:
   - `subassembly_hint`: Detects new subassemblies during extraction

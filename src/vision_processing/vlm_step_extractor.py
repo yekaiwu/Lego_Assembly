@@ -22,13 +22,13 @@ class VLMStepExtractor:
 
     def __init__(self):
         config = get_config()
-        self.primary_vlm = config.models.primary_vlm
-        self.secondary_vlm = config.models.secondary_vlm
-        self.fallback_vlm = config.models.fallback_vlm
+        self.ingestion_vlm = config.models.ingestion_vlm
+        self.ingestion_secondary_vlm = config.models.ingestion_secondary_vlm
+        self.ingestion_fallback_vlm = config.models.ingestion_fallback_vlm
         self.cache = get_cache()  # Initialize cache for step processing
         self.build_memory: Optional[BuildMemory] = None  # Context-aware memory
         self.token_budget: Optional[TokenBudgetManager] = None  # Token management
-        
+
         # Initialize VLM clients
         self.clients = {
             # Chinese VLMs
@@ -59,16 +59,16 @@ class VLMStepExtractor:
             "gemini-exp-1206": GeminiVisionClient(),  # DEPRECATED - aliased to gemini-2.0-pro-exp
             "gemini-robotics-er-1.5-preview": GeminiVisionClient(),  # Robotics-ER 1.5 (CORRECT NAME)
         }
-        
-        logger.info(f"VLM Step Extractor initialized with primary: {self.primary_vlm}")
 
-    def initialize_memory(self, main_build: str, window_size: int = 5, max_tokens: int = 1_000_000):
+        logger.info(f"VLM Step Extractor initialized with ingestion VLM: {self.ingestion_vlm}")
+
+    def initialize_memory(self, main_build: str, window_size: int = 2, max_tokens: int = 1_000_000):
         """
         Initialize memory systems for context-aware extraction.
 
         Args:
             main_build: Name of the main build being assembled
-            window_size: Number of previous steps in sliding window (default: 5)
+            window_size: Number of previous steps in sliding window (default: 2)
             max_tokens: Maximum context window size (default: 1M for Gemini)
         """
         self.build_memory = BuildMemory(main_build, window_size)
@@ -126,7 +126,7 @@ class VLMStepExtractor:
                             context = self.build_memory.get_full_context()
 
             results = self._extract_with_vlm_and_context(
-                self.primary_vlm,
+                self.ingestion_vlm,
                 image_paths,
                 step_number,
                 context,
@@ -333,7 +333,7 @@ RESPONSE CONSTRAINTS (CRITICAL):
         cache_context: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """Extract with fallback logic through multiple VLMs."""
-        vlm_sequence = [self.primary_vlm, self.secondary_vlm, self.fallback_vlm]
+        vlm_sequence = [self.ingestion_vlm, self.ingestion_secondary_vlm, self.ingestion_fallback_vlm]
 
         for vlm_name in vlm_sequence:
             logger.info(f"Trying VLM: {vlm_name}")
@@ -395,10 +395,10 @@ RESPONSE CONSTRAINTS (CRITICAL):
         logger.info("Refining extraction...")
         
         # Use primary VLM for refinement
-        client = self.clients.get(self.primary_vlm)
+        client = self.clients.get(self.ingestion_vlm)
         
         if not client:
-            logger.error(f"Primary VLM {self.primary_vlm} not available")
+            logger.error(f"Primary VLM {self.ingestion_vlm} not available")
             return initial_result
         
         # TODO: Implement refinement logic
