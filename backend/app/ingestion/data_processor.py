@@ -207,14 +207,20 @@ class ManualDataProcessor:
                             qwen_client=qwen_client
                         )
                     
-                    # Use multimodal content and embedding
+                    # Use multimodal content and embedding if successful
                     content = multimodal_content
-                    pre_computed_embedding = fused_embedding
-                    
+                    # Only use embedding if it's not None
+                    if fused_embedding is not None:
+                        pre_computed_embedding = fused_embedding
+                    else:
+                        logger.warning(f"Step {step_number}: No embedding generated, will skip or use default")
+                        pre_computed_embedding = None
+
                 except Exception as e:
                     logger.error(f"Multimodal processing failed for step {step_number}: {e}")
                     # Fall back to text-only
                     has_diagram = False
+                    pre_computed_embedding = None
             
             # Create chunk metadata
             metadata = {

@@ -231,24 +231,38 @@ Focus on the following for accurate retrieval:
                 manual_id,
                 step_context=step_text[:300]  # First 300 chars as context
             )
-            
+
             # Combine text and diagram description for storage
             combined_text = f"{step_text}\n\nDiagram Description: {diagram_description}"
-            
+
             # Generate fused embedding
             fused_embedding = self.generate_fused_embedding(
                 step_text,
                 diagram_description,
                 qwen_client
             )
-            
-            logger.info(f"Step {step_number}: Multimodal processing complete (text + diagram)")
-            return combined_text, fused_embedding, True
-        else:
-            # Text-only fallback
-            text_only_embedding = qwen_client.get_embeddings([step_text])[0]
-            logger.info(f"Step {step_number}: Text-only processing (no diagram)")
-            return step_text, text_only_embedding, False
+
+            # Check if embedding generation succeeded
+            if fused_embedding is not None:
+                logger.info(f"Step {step_number}: Multimodal processing complete (text + diagram)")
+                return combined_text, fused_embedding, True
+            else:
+                logger.warning(f"Step {step_number}: Fused embedding failed, falling back to text-only")
+                # Fall through to text-only processing below
+
+        # Text-only fallback (either no diagram or embedding generation failed)
+        try:
+            embeddings = qwen_client.get_embeddings([step_text])
+            if embeddings and len(embeddings) > 0:
+                text_only_embedding = embeddings[0]
+                logger.info(f"Step {step_number}: Text-only processing")
+                return step_text, text_only_embedding, False
+            else:
+                logger.error(f"Step {step_number}: Empty embeddings returned")
+                return step_text, None, False
+        except Exception as e:
+            logger.error(f"Step {step_number}: Text embedding failed: {e}")
+            return step_text, None, False
 
 
 def get_multimodal_processor() -> MultimodalProcessor:
