@@ -68,23 +68,14 @@ class MultimodalProcessor:
             
             # Build specialized prompt for diagram description
             prompt = self._build_diagram_description_prompt(step_number, step_context)
-            
-            # Prepare content for VLM
-            content = [{"text": prompt}]
-            
-            # Add image
-            if image_path.startswith('http://') or image_path.startswith('https://'):
-                content.append({"image": image_path})
-            else:
-                image_data = self.vlm_client._encode_image_to_base64(image_path)
-                content.append({"image": image_data})
-            
-            # Call VLM with retry logic
-            response = self.vlm_client._call_api_with_retry(content, use_json_mode=False)
-            result = self.vlm_client._parse_response(response, use_json_mode=False)
-            
-            # Extract text description
-            description = result.get('raw_text', '')
+
+            # Use the generic text description method - each VLM client handles its own format
+            cache_key = f"{manual_id}_step{step_number}"
+            description = self.vlm_client.generate_text_description(
+                image_path=image_path,
+                prompt=prompt,
+                cache_context=cache_key
+            )
             
             if not description:
                 logger.warning(f"Empty description for step {step_number}")
@@ -187,23 +178,27 @@ Focus on the following for accurate retrieval:
         try:
             # Generate embeddings for both text and diagram description
             embeddings = qwen_client.get_embeddings([text_content, diagram_description])
-            
+
+            if not embeddings or len(embeddings) < 2:
+                logger.warning("Insufficient embeddings returned, returning None")
+                return None
+
             text_embedding = embeddings[0]
             diagram_embedding = embeddings[1]
-            
+
             # Weighted fusion
             fused = [
                 text_weight * t + diagram_weight * d
                 for t, d in zip(text_embedding, diagram_embedding)
             ]
-            
+
             logger.debug(f"Generated fused embedding (dim: {len(fused)})")
             return fused
-            
+
         except Exception as e:
             logger.error(f"Error generating fused embedding: {e}")
-            # Fallback to text-only embedding
-            return qwen_client.get_embeddings([text_content])[0]
+            # Return None to signal failure - caller should handle fallback
+            return None
     
     def process_step_multimodal(
         self,

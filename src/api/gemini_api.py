@@ -82,54 +82,69 @@ class GeminiVisionClient:
         
         # Make API call with retry logic
         response = self._call_api_with_retry(parts, use_json_mode)
-        
+
         # Parse response
         result = self._parse_response(response, use_json_mode)
-        
+
+        # NEW: Normalize result to always be an array of steps
+        # (Handles both old single-object format and new array format)
+        normalized_result = self._normalize_to_array(result)
+
         # Cache result
-        self.cache.set(self.model, cache_key, result, image_paths)
-        
-        return result
+        self.cache.set(self.model, cache_key, normalized_result, image_paths)
+
+        return normalized_result
     
     def _build_extraction_prompt(self, step_number: Optional[int], use_json_mode: bool) -> str:
         """Build the extraction prompt for Gemini."""
         step_context = f"Step {step_number}: " if step_number else ""
-        
-        if use_json_mode:
-            prompt = f"""Analyze this LEGO instruction manual step carefully. {step_context}
-Extract the following information and return ONLY valid JSON:
 
-{{
-  "step_number": <number or null>,
-  "parts_required": [
-    {{
-      "description": "part description",
-      "color": "color name",
-      "shape": "brick type and dimensions",
-      "part_id": "LEGO part ID if visible",
-      "quantity": <number>
-    }}
-  ],
-  "existing_assembly": "description of already assembled parts shown",
-  "new_parts_to_add": [
-    "description of each new part being added in this step"
-  ],
-  "actions": [
-    {{
-      "action_verb": "attach|connect|place|align|rotate",
-      "target": "what is being attached",
-      "destination": "where it's being attached",
-      "orientation": "directional cues"
-    }}
-  ],
-  "spatial_relationships": {{
-    "position": "top|bottom|left|right|front|back|center",
-    "rotation": "rotation description if any",
-    "alignment": "alignment instructions"
-  }},
-  "dependencies": "which previous steps are prerequisites",
-  "notes": "any special instructions or warnings"
-}}
+        if use_json_mode:
+            prompt = f"""Analyze this LEGO instruction manual page carefully. {step_context}
+
+IMPORTANT: Some pages contain MULTIPLE steps. Extract ALL steps shown on this page.
+
+Return ONLY valid JSON as an ARRAY of steps (even if there's only one step):
+
+[
+  {{
+    "step_number": <number or null>,
+    "parts_required": [
+      {{
+        "description": "part description",
+        "color": "color name",
+        "shape": "brick type and dimensions",
+        "part_id": "LEGO part ID if visible",
+        "quantity": <number>
+      }}
+    ],
+    "existing_assembly": "description of already assembled parts shown",
+    "new_parts_to_add": [
+      "description of each new part being added in this step"
+    ],
+    "actions": [
+      {{
+        "action_verb": "attach|connect|place|align|rotate",
+        "target": "what is being attached",
+        "destination": "where it's being attached",
+        "orientation": "directional cues"
+      }}
+    ],
+    "spatial_relationships": {{
+      "position": "top|bottom|left|right|front|back|center",
+      "rotation": "rotation description if any",
+      "alignment": "alignment instructions"
+    }},
+    "dependencies": "which previous steps are prerequisites",
+    "notes": "any special instructions or warnings"
+  }}
+]
+
+CRITICAL INSTRUCTIONS:
+- If the page shows steps 34 AND 35, return TWO objects in the array
+- If the page shows only one step, return ONE object in the array
+- Always return an array [], never a single object
+- Each step should have its correct step_number from the manual
 
 Provide accurate, detailed extraction. If information is unclear, mark as null or "unclear"."""
         else:
@@ -293,7 +308,27 @@ Be detailed and precise."""
             logger.error(f"Failed to parse API response: {e}")
             logger.debug(f"Response structure: {response}")
             return {"error": str(e), "raw_response": response}
-    
+
+    def _normalize_to_array(self, result: Any) -> List[Dict[str, Any]]:
+        """
+        Ensure VLM response is an array of steps.
+
+        Expected format: [{"step_number": 34, ...}, {"step_number": 35, ...}]
+
+        Returns:
+            List of step dictionaries
+        """
+        if isinstance(result, list):
+            logger.debug(f"VLM returned {len(result)} step(s)")
+            return result
+
+        # VLM didn't follow instructions - log warning and wrap
+        logger.warning(f"VLM returned unexpected format (expected array): {type(result)}")
+        if isinstance(result, dict):
+            return [result]
+
+        return [{"error": "Invalid response format", "raw_result": str(result)}]
+
     def extract_step_info_with_context(
         self,
         image_paths: List[str],
@@ -355,10 +390,62 @@ Be detailed and precise."""
         # Parse response
         result = self._parse_response(response, use_json_mode)
 
-        # Cache result
-        self.cache.set(self.model, cache_key, result, image_paths)
+        # NEW: Normalize result to always be an array of steps
+        normalized_result = self._normalize_to_array(result)
 
-        return result
+        # Cache result
+        self.cache.set(self.model, cache_key, normalized_result, image_paths)
+
+        return normalized_result
+
+    def generate_text_description(
+        self,
+        image_path: str,
+        prompt: str,
+        cache_context: Optional[str] = None
+    ) -> str:
+        """
+        Generate a text description from an image using the VLM.
+
+        Generic method for generating text descriptions (not structured JSON).
+        Each VLM client handles its own image format internally.
+
+        Args:
+            image_path: Path to image file
+            prompt: Text prompt for description
+            cache_context: Optional context for caching
+
+        Returns:
+            Generated text description
+        """
+        # Check cache
+        cache_suffix = f":{cache_context}" if cache_context else ""
+        cache_key = f"{self.model}:text_desc:{image_path}{cache_suffix}"
+        cached = self.cache.get(self.model, cache_key, [image_path])
+        if cached:
+            return cached.get('raw_text', '')
+
+        # Prepare content with image
+        parts = [{"text": prompt}]
+
+        # Add image in Gemini format
+        if not image_path.startswith('http://') and not image_path.startswith('https://'):
+            image_data, mime_type = self._encode_image_to_base64(image_path)
+            parts.append({
+                "inline_data": {
+                    "mime_type": mime_type,
+                    "data": image_data
+                }
+            })
+
+        # Call API
+        response = self._call_api_with_retry(parts, use_json_mode=False)
+        result = self._parse_response(response, use_json_mode=False)
+
+        # Cache result
+        self.cache.set(self.model, cache_key, result, [image_path])
+
+        return result.get('raw_text', '')
 
     def _encode_image_to_base64(self, image_path: str) -> tuple[str, str]:
         """

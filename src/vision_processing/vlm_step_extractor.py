@@ -81,20 +81,21 @@ class VLMStepExtractor:
         step_number: Optional[int] = None,
         use_primary: bool = True,
         cache_context: Optional[str] = None
-    ) -> Dict[str, Any]:
+    ) -> List[Dict[str, Any]]:
         """
-        Extract structured information from a single step.
+        Extract structured information from instruction page(s).
 
-        NEW: If build_memory is initialized, uses context-aware extraction.
+        Pages may contain multiple steps. Returns array of all steps found.
+        If build_memory is initialized, uses context-aware extraction.
 
         Args:
             image_paths: List of paths to step images
-            step_number: Optional step number
+            step_number: Optional step number (usually None to let VLM detect)
             use_primary: Whether to use primary VLM (True) or try all (False)
             cache_context: Optional context to differentiate cache entries between manuals
 
         Returns:
-            Extracted step information
+            List of extracted step dictionaries (1 or more steps per page)
         """
         if use_primary:
             # Get context from memory systems if available
@@ -124,7 +125,7 @@ class VLMStepExtractor:
                             # Re-get context with adjusted window
                             context = self.build_memory.get_full_context()
 
-            result = self._extract_with_vlm_and_context(
+            results = self._extract_with_vlm_and_context(
                 self.primary_vlm,
                 image_paths,
                 step_number,
@@ -132,11 +133,13 @@ class VLMStepExtractor:
                 cache_context
             )
 
-            # Update memory with extraction result if no error
-            if self.build_memory and "error" not in result:
-                self.build_memory.add_step(result)
+            # Update memory with each extracted step
+            if self.build_memory:
+                for result in results:
+                    if "error" not in result:
+                        self.build_memory.add_step(result)
 
-            return result
+            return results
         else:
             return self._extract_with_fallback(image_paths, step_number, cache_context)
     
@@ -146,8 +149,8 @@ class VLMStepExtractor:
         image_paths: List[str],
         step_number: Optional[int],
         cache_context: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """Extract using a specific VLM (legacy, without context)."""
+    ) -> List[Dict[str, Any]]:
+        """Extract using a specific VLM (without context)."""
         return self._extract_with_vlm_and_context(
             vlm_name, image_paths, step_number, None, cache_context
         )
@@ -159,11 +162,10 @@ class VLMStepExtractor:
         step_number: Optional[int],
         context: Optional[Dict[str, str]],
         cache_context: Optional[str] = None
-    ) -> Dict[str, Any]:
+    ) -> List[Dict[str, Any]]:
         """
         Extract using a specific VLM with context.
-
-        NEW: Passes context to VLM for context-aware extraction.
+        Returns array of steps (VLM client now returns lists).
         """
         client = self.clients.get(vlm_name)
 
@@ -179,7 +181,7 @@ class VLMStepExtractor:
 
                 # Use context-aware extraction if client supports it
                 if hasattr(client, 'extract_step_info_with_context'):
-                    result = client.extract_step_info_with_context(
+                    results = client.extract_step_info_with_context(
                         image_paths,
                         step_number,
                         custom_prompt=prompt,
@@ -191,32 +193,39 @@ class VLMStepExtractor:
                     import inspect
                     sig = inspect.signature(client.extract_step_info)
                     if 'cache_context' in sig.parameters:
-                        result = client.extract_step_info(image_paths, step_number, cache_context=cache_context)
+                        results = client.extract_step_info(image_paths, step_number, cache_context=cache_context)
                     else:
-                        result = client.extract_step_info(image_paths, step_number)
+                        results = client.extract_step_info(image_paths, step_number)
             else:
                 # No context, use standard extraction
                 if hasattr(client, 'extract_step_info'):
                     import inspect
                     sig = inspect.signature(client.extract_step_info)
                     if 'cache_context' in sig.parameters:
-                        result = client.extract_step_info(image_paths, step_number, cache_context=cache_context)
+                        results = client.extract_step_info(image_paths, step_number, cache_context=cache_context)
                     else:
-                        result = client.extract_step_info(image_paths, step_number)
+                        results = client.extract_step_info(image_paths, step_number)
                 else:
-                    result = client.extract_step_info(image_paths, step_number)
+                    results = client.extract_step_info(image_paths, step_number)
 
-            # Validate result
-            if self._validate_extraction(result):
-                logger.info(f"Successfully extracted step info using {vlm_name}")
-                return result
+            # Validate each step in the results array
+            validated_results = []
+            for result in results:
+                if self._validate_extraction(result):
+                    validated_results.append(result)
+                else:
+                    logger.warning(f"Step {result.get('step_number', 'unknown')} failed validation")
+                    validated_results.append({"error": "Validation failed", "raw_result": result})
+
+            if validated_results:
+                logger.info(f"Successfully extracted {len(validated_results)} step(s) using {vlm_name}")
+                return validated_results
             else:
-                logger.warning(f"Extraction from {vlm_name} failed validation")
-                return {"error": "Validation failed", "raw_result": result}
+                return [{"error": "No valid steps extracted"}]
 
         except Exception as e:
             logger.error(f"Error extracting with {vlm_name}: {e}")
-            return {"error": str(e)}
+            return [{"error": str(e)}]
 
     def _build_context_aware_prompt(
         self,
@@ -318,37 +327,38 @@ RESPONSE CONSTRAINTS (CRITICAL):
         return "\n".join(prompt_parts)
     
     def _extract_with_fallback(
-        self, 
-        image_paths: List[str], 
+        self,
+        image_paths: List[str],
         step_number: Optional[int],
         cache_context: Optional[str] = None
-    ) -> Dict[str, Any]:
+    ) -> List[Dict[str, Any]]:
         """Extract with fallback logic through multiple VLMs."""
         vlm_sequence = [self.primary_vlm, self.secondary_vlm, self.fallback_vlm]
-        
+
         for vlm_name in vlm_sequence:
             logger.info(f"Trying VLM: {vlm_name}")
-            
+
             try:
-                result = self._extract_with_vlm(vlm_name, image_paths, step_number, cache_context)
-                
-                # If extraction succeeded, return
-                if "error" not in result:
-                    return result
-                
+                results = self._extract_with_vlm(vlm_name, image_paths, step_number, cache_context)
+
+                # If extraction succeeded, return (results is now an array)
+                # Check if any result has an error
+                if not any("error" in r for r in results):
+                    return results
+
                 logger.warning(f"{vlm_name} failed, trying next VLM...")
-            
+
             except Exception as e:
                 logger.error(f"{vlm_name} raised exception: {e}")
                 continue
-        
-        # All VLMs failed
+
+        # All VLMs failed - return error as array for consistency
         logger.error("All VLMs failed to extract step information")
-        return {
+        return [{
             "error": "All VLMs failed",
             "step_number": step_number,
             "image_paths": image_paths
-        }
+        }]
     
     def _validate_extraction(self, result: Dict[str, Any]) -> bool:
         """Validate that extraction result contains required fields."""

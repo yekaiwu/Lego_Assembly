@@ -15,6 +15,7 @@ from ..utils.config import get_config
 from ..utils.cache import get_cache
 
 class QwenVLMClient:
+    """Qwen VLM client with vision capabilities."""
     """Client for Qwen-VL-Max/Plus via DashScope API."""
     
     def __init__(self):
@@ -132,6 +133,51 @@ class QwenVLMClient:
         self.cache.set("qwen-vl-max", cache_key, result, image_paths)
 
         return result
+
+    def generate_text_description(
+        self,
+        image_path: str,
+        prompt: str,
+        cache_context: Optional[str] = None
+    ) -> str:
+        """
+        Generate a text description from an image using the VLM.
+
+        Generic method for generating text descriptions (not structured JSON).
+        Each VLM client handles its own image format internally.
+
+        Args:
+            image_path: Path to image file
+            prompt: Text prompt for description
+            cache_context: Optional context for caching
+
+        Returns:
+            Generated text description
+        """
+        # Check cache
+        cache_suffix = f":{cache_context}" if cache_context else ""
+        cache_key = f"qwen-vl-max:text_desc:{image_path}{cache_suffix}"
+        cached = self.cache.get("qwen-vl-max", cache_key, [image_path])
+        if cached:
+            return cached.get('raw_text', '')
+
+        # Prepare content with image in Qwen format
+        content = [{"text": prompt}]
+
+        if image_path.startswith('http://') or image_path.startswith('https://'):
+            content.append({"image": image_path})
+        else:
+            image_data = self._encode_image_to_base64(image_path)
+            content.append({"image": image_data})
+
+        # Call API
+        response = self._call_api_with_retry(content, use_json_mode=False)
+        result = self._parse_response(response, use_json_mode=False)
+
+        # Cache result
+        self.cache.set("qwen-vl-max", cache_key, result, [image_path])
+
+        return result.get('raw_text', '')
 
     def _build_extraction_prompt(self, step_number: Optional[int], use_json_mode: bool) -> str:
         """Build the extraction prompt for VLM."""
