@@ -7,26 +7,32 @@ from typing import Dict, Any, Optional
 from loguru import logger
 
 from ..config import get_settings
-from ..llm.qwen_client import QwenClient
+from ..llm.litellm_client import UnifiedLLMClient
 
 
 class QueryAugmenter:
     """
     Augments user queries with context for better retrieval.
-    
+
     Handles:
     - Vague queries like "What's next?" or "How do I fix this?"
     - Image analysis integration (detected parts, estimated step)
     - Manual-specific context
     - Query expansion with LEGO-specific terminology
     """
-    
+
     def __init__(self):
         """Initialize query augmenter with LLM client."""
         self.settings = get_settings()
-        api_key = self.settings.get_llm_api_key()
-        self.qwen_client = QwenClient(api_key, model=self.settings.rag_llm_model)
-        logger.info("QueryAugmenter initialized")
+
+        # Initialize LiteLLM client
+        api_keys = self.settings.get_api_keys_dict()
+        self.llm_client = UnifiedLLMClient(
+            model=self.settings.rag_llm_model,
+            api_keys=api_keys
+        )
+
+        logger.info(f"QueryAugmenter initialized with model: {self.settings.rag_llm_model}")
     
     def augment_query(
         self,
@@ -67,7 +73,7 @@ class QueryAugmenter:
             
             # Call LLM to augment query
             messages = [{"role": "user", "content": prompt}]
-            augmented_query = self.qwen_client.generate(
+            augmented_query = self.llm_client.generate(
                 messages=messages,
                 temperature=0.3,  # Low temperature for consistent augmentation
                 max_tokens=200
@@ -240,7 +246,7 @@ Output ONLY the rewritten query in English.
 Rewritten Query:"""
             
             messages = [{"role": "user", "content": prompt}]
-            augmented = self.qwen_client.generate(
+            augmented = self.llm_client.generate(
                 messages=messages,
                 temperature=0.3,
                 max_tokens=150

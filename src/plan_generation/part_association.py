@@ -12,7 +12,8 @@ import sys
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-from src.api.qwen_vlm import QwenVLMClient
+from src.api.litellm_vlm import UnifiedVLMClient
+from src.utils.config import get_config
 
 # Import PromptManager from backend
 backend_path = project_root / "backend"
@@ -87,10 +88,21 @@ class PartAssociationModule:
     Analyzes manual pages to identify all unique parts and assign roles.
     """
     
-    def __init__(self):
-        self.vlm_client = QwenVLMClient()
+    def __init__(self, vlm_client=None):
+        # Use provided VLM client or get from VLMStepExtractor's client registry
+        if vlm_client is None:
+            # Import here to avoid circular dependency
+            from src.vision_processing.vlm_step_extractor import VLMStepExtractor
+            config = get_config()
+            extractor = VLMStepExtractor()
+            ingestion_vlm = config.models.ingestion_vlm
+            self.vlm_client = extractor._get_client(ingestion_vlm)
+            logger.info(f"PartAssociationModule initialized with INGESTION_VLM: {ingestion_vlm}")
+        else:
+            self.vlm_client = vlm_client
+            logger.info("PartAssociationModule initialized with provided VLM client")
+        
         self.prompt_manager = PromptManager()
-        logger.info("PartAssociationModule initialized with PromptManager")
     
     def build_part_catalog(
         self,
@@ -195,8 +207,9 @@ class PartAssociationModule:
             # Check if this step has actual parts
             has_parts = len(step.get("parts_required", [])) > 0
             has_actions = len(step.get("actions", [])) > 0
-            is_cover = "cover" in step.get("notes", "").lower()
-            is_ad = any(keyword in step.get("notes", "").lower() 
+            notes = step.get("notes") or ""
+            is_cover = "cover" in notes.lower()
+            is_ad = any(keyword in notes.lower() 
                        for keyword in ["advertisement", "promotional", "lego.com", "visit"])
             
             if (has_parts or has_actions) and not is_cover and not is_ad:
@@ -236,19 +249,14 @@ class PartAssociationModule:
         
         # Build prompt for role assignment
         prompt = self._build_role_assignment_prompt(parts)
-        
-        # Call VLM with sample pages (limit to 4-6 images)
-        content = [{"text": prompt}]
-        for page_path in sample_pages[:6]:
-            if page_path.startswith('http://') or page_path.startswith('https://'):
-                content.append({"image": page_path})
-            else:
-                image_data = self.vlm_client._encode_image_to_base64(page_path)
-                content.append({"image": image_data})
-        
+
+        # Use provider-agnostic method to call VLM with custom prompt
         try:
-            response = self.vlm_client._call_api_with_retry(content, use_json_mode=True)
-            result = self.vlm_client._parse_response(response, use_json_mode=True)
+            result = self._call_vlm_with_custom_prompt(
+                prompt=prompt,
+                image_paths=sample_pages[:6],
+                use_json_mode=True
+            )
             
             # Parse role assignments
             role_assignments = result.get("part_roles", [])
@@ -271,7 +279,40 @@ class PartAssociationModule:
             logger.warning(f"VLM role assignment failed: {e}. Using heuristics.")
             # Fallback: use heuristic role assignment
             return [self._assign_role_heuristic(p) for p in parts]
-    
+
+    def _call_vlm_with_custom_prompt(
+        self,
+        prompt: str,
+        image_paths: List[str],
+        use_json_mode: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Provider-agnostic VLM call with custom prompt and images.
+        Handles different API formats for Gemini, OpenAI, Claude, etc.
+        """
+        client_type = type(self.vlm_client).__name__
+
+        # Use the public extract_step_info_with_context method if available
+        if hasattr(self.vlm_client, 'extract_step_info_with_context'):
+            return self.vlm_client.extract_step_info_with_context(
+                image_paths=image_paths,
+                custom_prompt=prompt,
+                use_json_mode=use_json_mode
+            )
+
+        # Fallback: use extract_step_info with step_number=None
+        # (Not ideal but works for simple cases)
+        elif hasattr(self.vlm_client, 'extract_step_info'):
+            logger.warning(f"{client_type} doesn't support custom prompts, using standard extraction")
+            return self.vlm_client.extract_step_info(
+                image_paths=image_paths,
+                step_number=None,
+                use_json_mode=use_json_mode
+            )
+
+        else:
+            raise NotImplementedError(f"VLM client {client_type} doesn't support required methods")
+
     def _build_role_assignment_prompt(self, parts: List[Dict[str, Any]]) -> str:
         """Build VLM prompt for role assignment using PromptManager."""
         # Build parts list for context

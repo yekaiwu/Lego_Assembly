@@ -210,31 +210,114 @@ def main(
         # NEW: Initialize context-aware memory
         vlm_extractor.initialize_memory(
             main_build=doc_metadata.main_build,
-            window_size=5,  # Remember last 5 steps
+            window_size=2,  # Remember last 2 steps (reduced from 5 for faster processing)
             max_tokens=1_000_000  # Gemini 2.5 Flash has 1M context window
         )
         logger.info(f"Initialized context-aware extraction for: {doc_metadata.main_build}")
 
-        # Process each step individually
+        # Check for partially completed extraction (incremental save file)
+        temp_extracted_path = output_dir / f"{assembly_id}_extracted_temp.json"
         extracted_steps = []
-        total_steps = len(step_groups)
-        for i, image_paths in enumerate(step_groups):
-            step_num = i + 1
-            logger.info(f"Processing step {step_num}/{total_steps}")
-            result = vlm_extractor.extract_step(
-                image_paths,
-                step_number=step_num,
-                use_primary=not use_fallback,
-                cache_context=assembly_id
-            )
-            extracted_steps.append(result)
-        logger.info(f"Extracted information from {len(extracted_steps)} steps (with context)")
+        start_step = 1
+        
+        if temp_extracted_path.exists():
+            try:
+                with open(temp_extracted_path, 'r', encoding='utf-8') as f:
+                    extracted_steps = json.load(f)
+                start_step = len(extracted_steps) + 1
+                logger.info(f"Resuming from step {start_step} (found {len(extracted_steps)} cached steps)")
+                
+                # Restore context memory with previous steps
+                for step_data in extracted_steps:
+                    vlm_extractor.context_memory.add_step(step_data)
+            except Exception as e:
+                logger.warning(f"Failed to load temp extraction file: {e}. Starting from scratch.")
+                extracted_steps = []
+                start_step = 1
 
-        # Save extracted data
+        # Process each page (pages may contain multiple steps)
+        total_pages = len(step_groups)
+        for i in range(start_step - 1, total_pages):
+            page_num = i + 1
+            image_paths = step_groups[i]
+            logger.info(f"Processing page {page_num}/{total_pages}")
+
+            try:
+                # extract_step returns array of steps (1 or more per page)
+                results = vlm_extractor.extract_step(
+                    image_paths,
+                    step_number=None,  # VLM detects step numbers from image
+                    use_primary=not use_fallback,
+                    cache_context=assembly_id
+                )
+
+                # Add each step to extracted_steps with page tracking
+                for result in results:
+                    step_num = result.get("step_number", "unknown")
+                    logger.info(f"  └─ Extracted step {step_num}")
+                    # Track which page this step came from
+                    result["_source_page_idx"] = i
+                    result["_source_page_paths"] = image_paths
+                    extracted_steps.append(result)
+                
+                # INCREMENTAL SAVE: Save progress after each successful page
+                with open(temp_extracted_path, 'w', encoding='utf-8') as f:
+                    json.dump(extracted_steps, f, indent=2, ensure_ascii=False)
+                logger.debug(f"Saved progress: {len(extracted_steps)} steps from {page_num}/{total_pages} pages")
+
+            except Exception as e:
+                logger.error(f"Error extracting page {page_num}: {e}")
+                # Save progress even on error, then re-raise
+                with open(temp_extracted_path, 'w', encoding='utf-8') as f:
+                    json.dump(extracted_steps, f, indent=2, ensure_ascii=False)
+                logger.info(f"Progress saved. {len(extracted_steps)} steps extracted from {page_num-1}/{total_pages} pages before error.")
+                raise
+
+        logger.info(f"Extracted information from {len(extracted_steps)} steps across {total_pages} pages (with context)")
+        logger.info("")
+
+        # NEW: Step Recovery - Detect and recover missing steps
+        logger.info("Validating step sequence and recovering missing steps...")
+        from src.vision_processing.step_recovery import StepRecoveryModule
+
+        recovery_module = StepRecoveryModule(vlm_extractor)
+        missing_steps = recovery_module.detect_missing_steps(extracted_steps)
+
+        if missing_steps:
+            logger.warning(f"Found {len(missing_steps)} missing steps: {missing_steps}")
+            logger.info("Attempting recovery by re-extracting relevant pages...")
+
+            # Recover missing steps
+            extracted_steps, recovered_count = recovery_module.recover_missing_steps(
+                extracted_steps,
+                step_groups,
+                assembly_id
+            )
+
+            if recovered_count > 0:
+                logger.info(f"✓ Successfully recovered {recovered_count}/{len(missing_steps)} missing steps")
+            else:
+                logger.warning(f"✗ Could not recover any missing steps - proceeding with gaps")
+
+            # Re-check for remaining gaps
+            remaining_missing = recovery_module.detect_missing_steps(extracted_steps)
+            if remaining_missing:
+                logger.warning(f"Still missing {len(remaining_missing)} steps after recovery: {remaining_missing}")
+        else:
+            logger.info("✓ No missing steps detected - all steps sequential")
+
+        logger.info("")
+
+        # Save final extracted data
         extracted_path = output_dir / f"{assembly_id}_extracted.json"
         with open(extracted_path, 'w', encoding='utf-8') as f:
             json.dump(extracted_steps, f, indent=2, ensure_ascii=False)
         logger.info(f"Saved extracted data to {extracted_path}")
+        
+        # Clean up temp file after successful completion
+        if temp_extracted_path.exists():
+            temp_extracted_path.unlink()
+            logger.debug("Removed temporary extraction file")
         logger.info("")
 
         checkpoint.save("step_extraction")

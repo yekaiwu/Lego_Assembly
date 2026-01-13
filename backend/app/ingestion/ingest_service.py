@@ -10,34 +10,38 @@ from loguru import logger
 
 from .data_processor import ManualDataProcessor
 from ..vector_store.chroma_manager import get_chroma_manager
-from ..llm.qwen_client import QwenClient
+from ..llm.litellm_client import UnifiedLLMClient
 from ..config import get_settings
 
 
 class IngestionService:
     """Service for ingesting LEGO manuals into vector store."""
-    
+
     def __init__(self, use_multimodal: bool = True):
         """
         Initialize ingestion service.
-        
+
         Args:
             use_multimodal: Whether to use multimodal processing (default: True)
         """
         self.settings = get_settings()
         self.processor = ManualDataProcessor(
             self.settings.output_dir,
-            use_multimodal=use_multimodal
+            use_multimodal=use_multimodal,
+            diagram_vlm=self.settings.diagram_vlm
         )
         self.chroma = get_chroma_manager()
-        
-        # Initialize Qwen client for embeddings (needed for multimodal)
+
+        # Initialize embedding client using LiteLLM (needed for multimodal)
         if use_multimodal:
-            api_key = self.settings.get_llm_api_key()
-            self.qwen_client = QwenClient(api_key)
-            logger.info("IngestionService initialized with multimodal support")
+            api_keys = self.settings.get_api_keys_dict()
+            self.embedding_client = UnifiedLLMClient(
+                model=self.settings.embedding_vlm,
+                api_keys=api_keys
+            )
+            logger.info(f"IngestionService initialized with LiteLLM embeddings ({self.settings.embedding_vlm})")
         else:
-            self.qwen_client = None
+            self.embedding_client = None
             logger.info("IngestionService initialized (text-only mode)")
     
     def ingest_manual(self, manual_id: str) -> Dict[str, Any]:
@@ -63,7 +67,7 @@ class IngestionService:
                 extracted_data,
                 plan_data,
                 dependencies_data,
-                qwen_client=self.qwen_client
+                embedding_client=self.embedding_client
             )
             
             # Create metadata chunk

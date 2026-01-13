@@ -43,7 +43,7 @@ class SpatialReasoning:
         Returns:
             Dictionary with x, y, z coordinates in studs
         """
-        position_desc = spatial_relationship.get("position", "").lower()
+        position_desc = (spatial_relationship.get("position") or "").lower()
         
         # If no reference parts, place at origin
         if not reference_parts:
@@ -108,7 +108,7 @@ class SpatialReasoning:
         Returns:
             Dictionary with x, y, z rotation angles in degrees
         """
-        rotation_desc = spatial_relationship.get("rotation", "").lower()
+        rotation_desc = (spatial_relationship.get("rotation") or "").lower()
         
         # Default: no rotation
         rotation = {"x": 0.0, "y": 0.0, "z": 0.0}

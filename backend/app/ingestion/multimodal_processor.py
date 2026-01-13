@@ -12,21 +12,40 @@ from loguru import logger
 project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-from src.api.qwen_vlm import QwenVLMClient
+from src.api.litellm_vlm import UnifiedVLMClient
+from src.utils.config import get_config as get_phase1_config
 
 
 class MultimodalProcessor:
     """
     Processes diagram images to generate text descriptions for embedding.
-    
-    Since Qwen doesn't provide direct image embedding API, we use Qwen-VL
-    to generate rich text descriptions of diagrams, then embed those descriptions.
+
+    Uses configured VLM to generate rich text descriptions of diagrams, then embed those descriptions.
     """
-    
-    def __init__(self):
-        """Initialize with Qwen-VL client."""
-        self.vlm_client = QwenVLMClient()
-        logger.info("MultimodalProcessor initialized with Qwen-VL client")
+
+    def __init__(self, vlm_client=None, diagram_vlm: str = None):
+        """
+        Initialize with configured VLM client.
+
+        Args:
+            vlm_client: Optional pre-initialized VLM client
+            diagram_vlm: Optional VLM model name for diagram descriptions (from backend config)
+        """
+        if vlm_client is None:
+            # Use DIAGRAM_VLM from Phase 1 config
+            from src.vision_processing.vlm_step_extractor import VLMStepExtractor
+            config = get_phase1_config()
+            extractor = VLMStepExtractor()
+
+            # Use diagram_vlm parameter if provided, otherwise fall back to config
+            if diagram_vlm is None:
+                diagram_vlm = config.models.diagram_vlm
+
+            self.vlm_client = extractor._get_client(diagram_vlm)
+            logger.info(f"MultimodalProcessor initialized with DIAGRAM_VLM: {diagram_vlm}")
+        else:
+            self.vlm_client = vlm_client
+            logger.info("MultimodalProcessor initialized with provided VLM client")
     
     def generate_diagram_description(
         self,
@@ -59,23 +78,14 @@ class MultimodalProcessor:
             
             # Build specialized prompt for diagram description
             prompt = self._build_diagram_description_prompt(step_number, step_context)
-            
-            # Prepare content for VLM
-            content = [{"text": prompt}]
-            
-            # Add image
-            if image_path.startswith('http://') or image_path.startswith('https://'):
-                content.append({"image": image_path})
-            else:
-                image_data = self.vlm_client._encode_image_to_base64(image_path)
-                content.append({"image": image_data})
-            
-            # Call VLM with retry logic
-            response = self.vlm_client._call_api_with_retry(content, use_json_mode=False)
-            result = self.vlm_client._parse_response(response, use_json_mode=False)
-            
-            # Extract text description
-            description = result.get('raw_text', '')
+
+            # Use the generic text description method - each VLM client handles its own format
+            cache_key = f"{manual_id}_step{step_number}"
+            description = self.vlm_client.generate_text_description(
+                image_path=image_path,
+                prompt=prompt,
+                cache_context=cache_key
+            )
             
             if not description:
                 logger.warning(f"Empty description for step {step_number}")
@@ -154,47 +164,51 @@ Focus on the following for accurate retrieval:
         self,
         text_content: str,
         diagram_description: str,
-        qwen_client: Any,
+        embedding_client: Any,
         text_weight: float = 0.4,
         diagram_weight: float = 0.6
     ) -> List[float]:
         """
         Generate fused embedding from text and diagram description.
-        
+
         Combines text embedding and diagram description embedding using weighted average.
         Diagram weight is higher (0.6) because visual information is often more important
         for LEGO assembly instructions.
-        
+
         Args:
             text_content: Text content of the step
             diagram_description: VLM-generated description of diagram
-            qwen_client: Qwen client for generating embeddings
+            embedding_client: Embedding client (Gemini, Qwen, etc.) for generating embeddings
             text_weight: Weight for text embedding (default: 0.4)
             diagram_weight: Weight for diagram embedding (default: 0.6)
-        
+
         Returns:
             Fused embedding vector
         """
         try:
             # Generate embeddings for both text and diagram description
-            embeddings = qwen_client.get_embeddings([text_content, diagram_description])
-            
+            embeddings = embedding_client.get_embeddings([text_content, diagram_description])
+
+            if not embeddings or len(embeddings) < 2:
+                logger.warning("Insufficient embeddings returned, returning None")
+                return None
+
             text_embedding = embeddings[0]
             diagram_embedding = embeddings[1]
-            
+
             # Weighted fusion
             fused = [
                 text_weight * t + diagram_weight * d
                 for t, d in zip(text_embedding, diagram_embedding)
             ]
-            
+
             logger.debug(f"Generated fused embedding (dim: {len(fused)})")
             return fused
-            
+
         except Exception as e:
             logger.error(f"Error generating fused embedding: {e}")
-            # Fallback to text-only embedding
-            return qwen_client.get_embeddings([text_content])[0]
+            # Return None to signal failure - caller should handle fallback
+            return None
     
     def process_step_multimodal(
         self,
@@ -202,18 +216,18 @@ Focus on the following for accurate retrieval:
         image_path: Optional[str],
         step_number: int,
         manual_id: str,
-        qwen_client: Any
+        embedding_client: Any
     ) -> tuple[str, List[float], bool]:
         """
         Process a single step to generate multimodal content and embedding.
-        
+
         Args:
             step_text: Text content of the step
             image_path: Path to step diagram (or None)
             step_number: Step number
             manual_id: Manual identifier
-            qwen_client: Qwen client for embeddings
-        
+            embedding_client: Embedding client (Gemini, Qwen, etc.) for embeddings
+
         Returns:
             Tuple of (combined_text, fused_embedding, has_diagram)
         """
@@ -227,29 +241,51 @@ Focus on the following for accurate retrieval:
                 manual_id,
                 step_context=step_text[:300]  # First 300 chars as context
             )
-            
+
             # Combine text and diagram description for storage
             combined_text = f"{step_text}\n\nDiagram Description: {diagram_description}"
-            
+
             # Generate fused embedding
             fused_embedding = self.generate_fused_embedding(
                 step_text,
                 diagram_description,
-                qwen_client
+                embedding_client
             )
-            
-            logger.info(f"Step {step_number}: Multimodal processing complete (text + diagram)")
-            return combined_text, fused_embedding, True
-        else:
-            # Text-only fallback
-            text_only_embedding = qwen_client.get_embeddings([step_text])[0]
-            logger.info(f"Step {step_number}: Text-only processing (no diagram)")
-            return step_text, text_only_embedding, False
+
+            # Check if embedding generation succeeded
+            if fused_embedding is not None:
+                logger.info(f"Step {step_number}: Multimodal processing complete (text + diagram)")
+                return combined_text, fused_embedding, True
+            else:
+                logger.warning(f"Step {step_number}: Fused embedding failed, falling back to text-only")
+                # Fall through to text-only processing below
+
+        # Text-only fallback (either no diagram or embedding generation failed)
+        try:
+            embeddings = embedding_client.get_embeddings([step_text])
+            if embeddings and len(embeddings) > 0:
+                text_only_embedding = embeddings[0]
+                logger.info(f"Step {step_number}: Text-only processing")
+                return step_text, text_only_embedding, False
+            else:
+                logger.error(f"Step {step_number}: Empty embeddings returned")
+                return step_text, None, False
+        except Exception as e:
+            logger.error(f"Step {step_number}: Text embedding failed: {e}")
+            return step_text, None, False
 
 
-def get_multimodal_processor() -> MultimodalProcessor:
-    """Get MultimodalProcessor singleton."""
-    return MultimodalProcessor()
+def get_multimodal_processor(diagram_vlm: str = None) -> MultimodalProcessor:
+    """
+    Get MultimodalProcessor instance.
+
+    Args:
+        diagram_vlm: Optional VLM model name for diagram descriptions
+
+    Returns:
+        MultimodalProcessor instance
+    """
+    return MultimodalProcessor(diagram_vlm=diagram_vlm)
 
 
 

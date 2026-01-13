@@ -9,8 +9,8 @@ from typing import Optional
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
-# Load environment variables
-load_dotenv()
+# Load environment variables with override to ensure .env takes precedence
+load_dotenv(override=True)
 
 class APIConfig(BaseModel):
     """API configuration for VLM services."""
@@ -44,9 +44,18 @@ class APIConfig(BaseModel):
 
 class ModelConfig(BaseModel):
     """VLM model selection configuration."""
-    primary_vlm: str = Field(default_factory=lambda: os.getenv("PRIMARY_VLM", "qwen-vl-max"))
-    secondary_vlm: str = Field(default_factory=lambda: os.getenv("SECONDARY_VLM", "deepseek-v2"))
-    fallback_vlm: str = Field(default_factory=lambda: os.getenv("FALLBACK_VLM", "kimi-vision"))
+    # Phase 1: Ingestion VLMs (for extracting steps from instruction pages)
+    ingestion_vlm: str = Field(default_factory=lambda: os.getenv("INGESTION_VLM", "gemini-robotics-er-1.5-preview"))
+    ingestion_secondary_vlm: str = Field(default_factory=lambda: os.getenv("INGESTION_SECONDARY_VLM", "gpt-4o-mini"))
+    ingestion_fallback_vlm: str = Field(default_factory=lambda: os.getenv("INGESTION_FALLBACK_VLM", "gemini-2.5-flash"))
+
+    # Backend: Diagram VLM (for generating diagram descriptions)
+    diagram_vlm: str = Field(default_factory=lambda: os.getenv("DIAGRAM_VLM", "gemini-robotics-er-1.5-preview"))
+
+    # Embedding VLM (for generating embeddings)
+    embedding_vlm: str = Field(default_factory=lambda: os.getenv("EMBEDDING_VLM", "gemini-2.5-flash"))
+
+    # General settings
     max_retries: int = Field(default_factory=lambda: int(os.getenv("MAX_RETRIES", "3")))
     request_timeout: int = Field(default_factory=lambda: int(os.getenv("REQUEST_TIMEOUT", "60")))
 
@@ -67,7 +76,7 @@ class SystemConfig(BaseModel):
     api: APIConfig = Field(default_factory=APIConfig)
     models: ModelConfig = Field(default_factory=ModelConfig)
     paths: PathConfig = Field(default_factory=PathConfig)
-    cache_enabled: bool = Field(default=False)  # Disabled by default to ensure fresh processing
+    cache_enabled: bool = Field(default_factory=lambda: os.getenv("CACHE_ENABLED", "true").lower() == "true")  # Enabled by default to prevent data loss
 
 # Global config instance
 config = SystemConfig()

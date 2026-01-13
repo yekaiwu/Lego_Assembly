@@ -13,14 +13,14 @@ import sys
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-from src.api.qwen_vlm import QwenVLMClient
+from src.api.litellm_vlm import UnifiedVLMClient
 from .part_association import PartAssociationModule, PartCatalog
 
 
 class SubassemblyDetector:
     """Detects subassemblies using VLM-guided heuristics."""
-    
-    def __init__(self, vlm_client: QwenVLMClient):
+
+    def __init__(self, vlm_client: UnifiedVLMClient):
         self.vlm_client = vlm_client
     
     def detect_subassemblies(
@@ -93,10 +93,10 @@ class SubassemblyDetector:
         # Heuristic 1: Functional grouping
         parts = step.get("parts_required", [])
         actions = step.get("actions", [])
-        
+
         # Look for functional keywords in descriptions
         functional_keywords = ["wheel", "wing", "base", "body", "roof", "door", "window", "frame"]
-        notes = step.get("notes", "").lower()
+        notes = (step.get("notes") or "").lower()  # Handle None explicitly
         
         has_functional_parts = any(
             any(kw in part.get("shape", "").lower() or kw in part.get("description", "").lower() 
@@ -343,9 +343,21 @@ class GraphBuilder:
     Builds hierarchical assembly graph following Manual2Skill's 2-stage approach.
     """
     
-    def __init__(self):
-        self.vlm_client = QwenVLMClient()
-        self.part_association = PartAssociationModule()
+    def __init__(self, vlm_client=None):
+        # Use provided VLM client or get from config
+        if vlm_client is None:
+            from src.vision_processing.vlm_step_extractor import VLMStepExtractor
+            from src.utils.config import get_config
+            config = get_config()
+            extractor = VLMStepExtractor()
+            ingestion_vlm = config.models.ingestion_vlm
+            self.vlm_client = extractor._get_client(ingestion_vlm)
+            logger.info(f"GraphBuilder initialized with INGESTION_VLM: {ingestion_vlm}")
+        else:
+            self.vlm_client = vlm_client
+            logger.info("GraphBuilder initialized with provided VLM client")
+        
+        self.part_association = PartAssociationModule(vlm_client=self.vlm_client)
         self.subassembly_detector = SubassemblyDetector(self.vlm_client)
         self.state_tracker = StepStateTracker()
         logger.info("GraphBuilder initialized with 2-stage hierarchical construction")

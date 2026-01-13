@@ -13,21 +13,22 @@ from loguru import logger
 class ManualDataProcessor:
     """Processes LEGO manual data for ingestion into vector store."""
     
-    def __init__(self, output_dir: Path, use_multimodal: bool = True):
+    def __init__(self, output_dir: Path, use_multimodal: bool = True, diagram_vlm: str = None):
         """
         Initialize data processor.
-        
+
         Args:
             output_dir: Path to output directory containing manual data
             use_multimodal: Whether to use multimodal processing (default: True)
+            diagram_vlm: Optional VLM model name for diagram descriptions
         """
         self.output_dir = Path(output_dir)
         self.use_multimodal = use_multimodal
-        
+
         # Import multimodal processor if needed
         if use_multimodal:
             from .multimodal_processor import get_multimodal_processor
-            self.multimodal_processor = get_multimodal_processor()
+            self.multimodal_processor = get_multimodal_processor(diagram_vlm=diagram_vlm)
             logger.info("DataProcessor initialized with multimodal support")
         else:
             self.multimodal_processor = None
@@ -78,18 +79,18 @@ class ManualDataProcessor:
         extracted_data: List[Dict[str, Any]],
         plan_data: Dict[str, Any],
         dependencies_data: Dict[str, Any],
-        qwen_client: Optional[Any] = None
+        embedding_client: Optional[Any] = None
     ) -> List[Dict[str, Any]]:
         """
         Create document chunks for each step with optional multimodal embeddings.
-        
+
         Args:
             manual_id: Manual identifier
             extracted_data: Extracted step information
             plan_data: 3D plan data
             dependencies_data: Dependency graph
-            qwen_client: Optional Qwen client for generating embeddings (required for multimodal)
-        
+            embedding_client: Optional embedding client (Gemini, Qwen, etc.) for generating embeddings (required for multimodal)
+
         Returns:
             List of chunk dictionaries with content, metadata, and optional pre-computed embeddings
         """
@@ -165,8 +166,15 @@ class ManualDataProcessor:
                 if spatial_text:
                     content_parts.append(f"Spatial info: {', '.join(spatial_text)}")
             
-            # Add dependencies
+            # Add dependencies (handle None and string values)
             dependencies = dep_info.get('dependencies', [])
+            # Ensure dependencies is a list, not None or string
+            if dependencies is None:
+                dependencies = []
+            elif isinstance(dependencies, str):
+                # Convert string to list for consistency (but keep string for display)
+                dependencies = [dependencies]
+
             if dependencies:
                 content_parts.append(f"Requires steps: {', '.join(map(str, dependencies))}")
             
@@ -195,7 +203,7 @@ class ManualDataProcessor:
             has_diagram = False
             pre_computed_embedding = None
             
-            if self.use_multimodal and self.multimodal_processor and qwen_client and image_path:
+            if self.use_multimodal and self.multimodal_processor and embedding_client and image_path:
                 try:
                     # Generate multimodal content and embedding
                     multimodal_content, fused_embedding, has_diagram = \
@@ -204,17 +212,23 @@ class ManualDataProcessor:
                             image_path=image_path,
                             step_number=step_number,
                             manual_id=manual_id,
-                            qwen_client=qwen_client
+                            embedding_client=embedding_client
                         )
                     
-                    # Use multimodal content and embedding
+                    # Use multimodal content and embedding if successful
                     content = multimodal_content
-                    pre_computed_embedding = fused_embedding
-                    
+                    # Only use embedding if it's not None
+                    if fused_embedding is not None:
+                        pre_computed_embedding = fused_embedding
+                    else:
+                        logger.warning(f"Step {step_number}: No embedding generated, will skip or use default")
+                        pre_computed_embedding = None
+
                 except Exception as e:
                     logger.error(f"Multimodal processing failed for step {step_number}: {e}")
                     # Fall back to text-only
                     has_diagram = False
+                    pre_computed_embedding = None
             
             # Create chunk metadata
             metadata = {

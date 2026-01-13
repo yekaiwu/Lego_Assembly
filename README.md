@@ -202,7 +202,7 @@ uv run python main.py https://www.lego.com/cdn/product-assets/product.bi.core.pd
 - Saves API calls and processing time
 
 **🧠 Context-Aware Extraction (Phase 1)**:
-- Maintains sliding window of last 5 steps for immediate context
+- Maintains sliding window of last 2 steps for immediate context
 - Tracks long-term build state (completed subassemblies, current work)
 - Generates enhanced subassembly hints (20-30% better detection)
 - Captures inter-step references automatically
@@ -428,7 +428,7 @@ This generates fused embeddings (text + diagram descriptions) for improved visua
   - **Benefit**: 10-15% fewer API calls
 
 - **Phase 1 - Context-Aware Extraction** (NEW):
-  - **Sliding Window Memory**: Tracks last 5 steps (~1,500 tokens)
+  - **Sliding Window Memory**: Tracks last 2 steps (~600 tokens)
   - **Long-Term Memory**: Maintains overall build state (~500 tokens)
   - **Enhanced Prompts**: Includes context in VLM requests
   - **Subassembly Hints**: Detects new subassemblies during extraction

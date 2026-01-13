@@ -15,6 +15,7 @@ from ..utils.config import get_config
 from ..utils.cache import get_cache
 
 class QwenVLMClient:
+    """Qwen VLM client with vision capabilities."""
     """Client for Qwen-VL-Max/Plus via DashScope API."""
     
     def __init__(self):
@@ -76,9 +77,108 @@ class QwenVLMClient:
         
         # Cache result
         self.cache.set("qwen-vl-max", cache_key, result, image_paths)
-        
+
         return result
-    
+
+    def extract_step_info_with_context(
+        self,
+        image_paths: List[str],
+        step_number: Optional[int] = None,
+        custom_prompt: Optional[str] = None,
+        use_json_mode: bool = True,
+        cache_context: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Extract step info with custom context-aware prompt.
+
+        Args:
+            image_paths: List of paths to step images
+            step_number: Optional step number for context
+            custom_prompt: Custom prompt (overrides default)
+            use_json_mode: Whether to request JSON formatted output
+            cache_context: Optional context string to differentiate cache entries
+
+        Returns:
+            Extracted step information
+        """
+        # Check cache first
+        cache_suffix = f":{cache_context}" if cache_context else ""
+        cache_key = f"qwen-vl-max:{','.join(image_paths)}:{step_number}{cache_suffix}"
+        cached = self.cache.get("qwen-vl-max", cache_key, image_paths)
+        if cached:
+            return cached
+
+        # Use custom prompt if provided, otherwise build default
+        if custom_prompt:
+            prompt = custom_prompt
+        else:
+            prompt = self._build_extraction_prompt(step_number, use_json_mode)
+
+        # Prepare multi-modal content
+        content = [{"text": prompt}]
+        for img_path in image_paths:
+            if img_path.startswith('http://') or img_path.startswith('https://'):
+                content.append({"image": img_path})
+            else:
+                image_data = self._encode_image_to_base64(img_path)
+                content.append({"image": image_data})
+
+        # Make API call with retry logic
+        response = self._call_api_with_retry(content, use_json_mode)
+
+        # Parse response
+        result = self._parse_response(response, use_json_mode)
+
+        # Cache result
+        self.cache.set("qwen-vl-max", cache_key, result, image_paths)
+
+        return result
+
+    def generate_text_description(
+        self,
+        image_path: str,
+        prompt: str,
+        cache_context: Optional[str] = None
+    ) -> str:
+        """
+        Generate a text description from an image using the VLM.
+
+        Generic method for generating text descriptions (not structured JSON).
+        Each VLM client handles its own image format internally.
+
+        Args:
+            image_path: Path to image file
+            prompt: Text prompt for description
+            cache_context: Optional context for caching
+
+        Returns:
+            Generated text description
+        """
+        # Check cache
+        cache_suffix = f":{cache_context}" if cache_context else ""
+        cache_key = f"qwen-vl-max:text_desc:{image_path}{cache_suffix}"
+        cached = self.cache.get("qwen-vl-max", cache_key, [image_path])
+        if cached:
+            return cached.get('raw_text', '')
+
+        # Prepare content with image in Qwen format
+        content = [{"text": prompt}]
+
+        if image_path.startswith('http://') or image_path.startswith('https://'):
+            content.append({"image": image_path})
+        else:
+            image_data = self._encode_image_to_base64(image_path)
+            content.append({"image": image_data})
+
+        # Call API
+        response = self._call_api_with_retry(content, use_json_mode=False)
+        result = self._parse_response(response, use_json_mode=False)
+
+        # Cache result
+        self.cache.set("qwen-vl-max", cache_key, result, [image_path])
+
+        return result.get('raw_text', '')
+
     def _build_extraction_prompt(self, step_number: Optional[int], use_json_mode: bool) -> str:
         """Build the extraction prompt for VLM."""
         step_context = f"Step {step_number}: " if step_number else ""
