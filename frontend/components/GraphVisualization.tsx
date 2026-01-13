@@ -20,6 +20,13 @@ interface GraphNode {
   layer: number
 }
 
+interface GraphEdge {
+  from: string
+  to: string
+  type: string
+  created_step: number
+}
+
 interface GraphData {
   manual_id: string
   metadata: {
@@ -30,11 +37,7 @@ interface GraphData {
     generated_at: string
   }
   nodes: GraphNode[]
-  edges: Array<{
-    source: string
-    target: string
-    relationship: string
-  }>
+  edges: GraphEdge[]
 }
 
 export default function GraphVisualization() {

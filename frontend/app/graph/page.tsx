@@ -1,4 +1,7 @@
+'use client'
+
 import GraphVisualization from '@/components/GraphVisualization'
+import ManualSelector from '@/components/ManualSelector'
 import Link from 'next/link'
 import { ArrowLeft } from 'lucide-react'
 
@@ -31,6 +34,11 @@ export default function GraphPage() {
 
       {/* Main Content */}
       <div className="max-w-7xl mx-auto px-4 py-6">
+        {/* Manual Selection */}
+        <div className="mb-6">
+          <ManualSelector />
+        </div>
+
         <GraphVisualization />
       </div>
 
