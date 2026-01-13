@@ -166,8 +166,15 @@ class ManualDataProcessor:
                 if spatial_text:
                     content_parts.append(f"Spatial info: {', '.join(spatial_text)}")
             
-            # Add dependencies
+            # Add dependencies (handle None and string values)
             dependencies = dep_info.get('dependencies', [])
+            # Ensure dependencies is a list, not None or string
+            if dependencies is None:
+                dependencies = []
+            elif isinstance(dependencies, str):
+                # Convert string to list for consistency (but keep string for display)
+                dependencies = [dependencies]
+
             if dependencies:
                 content_parts.append(f"Requires steps: {', '.join(map(str, dependencies))}")
             

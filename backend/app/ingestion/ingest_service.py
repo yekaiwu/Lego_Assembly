@@ -10,8 +10,7 @@ from loguru import logger
 
 from .data_processor import ManualDataProcessor
 from ..vector_store.chroma_manager import get_chroma_manager
-from ..llm.qwen_client import QwenClient
-from ..llm.gemini_client import GeminiClient
+from ..llm.litellm_client import UnifiedLLMClient
 from ..config import get_settings
 
 
@@ -33,25 +32,14 @@ class IngestionService:
         )
         self.chroma = get_chroma_manager()
 
-        # Initialize embedding client based on provider (needed for multimodal)
+        # Initialize embedding client using LiteLLM (needed for multimodal)
         if use_multimodal:
-            api_key = self.settings.get_embedding_api_key()
-            provider = self.settings.rag_embedding_provider
-
-            if provider == "qwen":
-                self.embedding_client = QwenClient(api_key)
-                logger.info("IngestionService initialized with Qwen embeddings")
-            elif provider == "gemini":
-                self.embedding_client = GeminiClient(
-                    api_key,
-                    model=self.settings.embedding_vlm,
-                    embedding_model=self.settings.rag_embedding_model
-                )
-                logger.info(f"IngestionService initialized with Gemini embeddings ({self.settings.embedding_vlm})")
-            else:
-                raise ValueError(f"Unknown embedding provider: {provider}")
-
-            logger.info("IngestionService initialized with multimodal support")
+            api_keys = self.settings.get_api_keys_dict()
+            self.embedding_client = UnifiedLLMClient(
+                model=self.settings.embedding_vlm,
+                api_keys=api_keys
+            )
+            logger.info(f"IngestionService initialized with LiteLLM embeddings ({self.settings.embedding_vlm})")
         else:
             self.embedding_client = None
             logger.info("IngestionService initialized (text-only mode)")

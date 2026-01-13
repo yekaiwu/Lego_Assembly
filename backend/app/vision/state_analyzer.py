@@ -24,13 +24,13 @@ class StateAnalyzer:
     def __init__(self, vlm_client=None):
         """Initialize with Phase 1 VLM client."""
         if vlm_client is None:
-            # Use PRIMARY_VLM from Phase 1 config
+            # Use INGESTION_VLM from Phase 1 config (for analyzing user photos)
             from src.vision_processing.vlm_step_extractor import VLMStepExtractor
             config = get_phase1_config()
             extractor = VLMStepExtractor()
-            primary_vlm = config.models.primary_vlm
-            self.vlm_client = extractor.clients.get(primary_vlm, QwenVLMClient())
-            logger.info(f"StateAnalyzer initialized with PRIMARY_VLM: {primary_vlm}")
+            ingestion_vlm = config.models.ingestion_vlm
+            self.vlm_client = extractor.clients.get(ingestion_vlm, QwenVLMClient())
+            logger.info(f"StateAnalyzer initialized with INGESTION_VLM: {ingestion_vlm}")
         else:
             self.vlm_client = vlm_client
             logger.info("StateAnalyzer initialized with provided VLM client")

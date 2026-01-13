@@ -6,12 +6,7 @@ from LEGO instruction steps. Manages multiple VLM providers with fallback logic.
 from typing import List, Dict, Any, Optional
 from loguru import logger
 
-from ..api.qwen_vlm import QwenVLMClient
-from ..api.deepseek_api import DeepSeekClient
-from ..api.kimi_api import KimiClient
-from ..api.openai_api import OpenAIVisionClient
-from ..api.anthropic_api import AnthropicVisionClient
-from ..api.gemini_api import GeminiVisionClient
+from ..api.litellm_vlm import UnifiedVLMClient
 from ..utils.config import get_config
 from ..utils.cache import get_cache
 from .build_memory import BuildMemory
@@ -29,38 +24,24 @@ class VLMStepExtractor:
         self.build_memory: Optional[BuildMemory] = None  # Context-aware memory
         self.token_budget: Optional[TokenBudgetManager] = None  # Token management
 
-        # Initialize VLM clients
-        self.clients = {
-            # Chinese VLMs
-            "qwen-vl-max": QwenVLMClient(),
-            "qwen-vl-plus": QwenVLMClient(),
-            "deepseek-v2": DeepSeekClient(),
-            "kimi-vision": KimiClient(),
-
-            # International VLMs
-            "gpt-4o": OpenAIVisionClient(),
-            "gpt-4o-mini": OpenAIVisionClient(),
-            "gpt-4-vision": OpenAIVisionClient(),
-            "gpt-4-turbo": OpenAIVisionClient(),
-            "claude-3-opus": AnthropicVisionClient(),
-            "claude-3-sonnet": AnthropicVisionClient(),
-            "claude-3-5-sonnet": AnthropicVisionClient(),
-            "claude-3-haiku": AnthropicVisionClient(),
-            "gemini-2.5-flash": GeminiVisionClient(),
-            "gemini-2.0-flash": GeminiVisionClient(),
-            "gemini-2.0-flash-exp": GeminiVisionClient(),
-            "gemini-2.0-flash-thinking-exp": GeminiVisionClient(),
-            "gemini-flash-latest": GeminiVisionClient(),
-            "gemini-1.5-pro": GeminiVisionClient(),
-            "gemini-1.5-pro-latest": GeminiVisionClient(),
-            "gemini-1.5-flash": GeminiVisionClient(),
-            "gemini-1.5-flash-latest": GeminiVisionClient(),
-            "gemini-pro-vision": GeminiVisionClient(),
-            "gemini-exp-1206": GeminiVisionClient(),  # DEPRECATED - aliased to gemini-2.0-pro-exp
-            "gemini-robotics-er-1.5-preview": GeminiVisionClient(),  # Robotics-ER 1.5 (CORRECT NAME)
-        }
+        # Cache for unified VLM clients (created on-demand)
+        self._client_cache = {}
 
         logger.info(f"VLM Step Extractor initialized with ingestion VLM: {self.ingestion_vlm}")
+
+    def _get_client(self, vlm_name: str) -> UnifiedVLMClient:
+        """
+        Get or create a VLM client for the given model name.
+
+        Args:
+            vlm_name: LiteLLM model identifier (e.g., "gemini/gemini-2.5-flash", "gpt-4o")
+
+        Returns:
+            UnifiedVLMClient instance
+        """
+        if vlm_name not in self._client_cache:
+            self._client_cache[vlm_name] = UnifiedVLMClient(vlm_name)
+        return self._client_cache[vlm_name]
 
     def initialize_memory(self, main_build: str, window_size: int = 2, max_tokens: int = 1_000_000):
         """
@@ -167,10 +148,11 @@ class VLMStepExtractor:
         Extract using a specific VLM with context.
         Returns array of steps (VLM client now returns lists).
         """
-        client = self.clients.get(vlm_name)
-
-        if not client:
-            raise ValueError(f"Unknown VLM: {vlm_name}")
+        try:
+            client = self._get_client(vlm_name)
+        except Exception as e:
+            logger.error(f"Failed to create client for {vlm_name}: {e}")
+            raise ValueError(f"Unknown VLM: {vlm_name}") from e
 
         logger.info(f"Extracting step info using {vlm_name}{' with context' if context else ''}")
 
@@ -376,34 +358,34 @@ RESPONSE CONSTRAINTS (CRITICAL):
         return True
 
     def refine_extraction(
-        self, 
-        initial_result: Dict[str, Any], 
+        self,
+        initial_result: Dict[str, Any],
         image_paths: List[str],
         refinement_prompt: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Refine an initial extraction with additional context or corrections.
-        
+
         Args:
             initial_result: Initial extraction result
             image_paths: Original step images
             refinement_prompt: Optional custom refinement instructions
-        
+
         Returns:
             Refined extraction result
         """
         logger.info("Refining extraction...")
-        
+
         # Use primary VLM for refinement
-        client = self.clients.get(self.ingestion_vlm)
-        
-        if not client:
-            logger.error(f"Primary VLM {self.ingestion_vlm} not available")
+        try:
+            client = self._get_client(self.ingestion_vlm)
+        except Exception as e:
+            logger.error(f"Primary VLM {self.ingestion_vlm} not available: {e}")
             return initial_result
-        
+
         # TODO: Implement refinement logic
         # This would involve sending the initial result back to VLM with refinement instructions
-        
+
         logger.info("Refinement not yet implemented, returning initial result")
         return initial_result
     

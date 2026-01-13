@@ -30,7 +30,9 @@ dependencies = [
     "chromadb>=0.4.22",
     "pydantic-settings>=2.1.0",
     "aiofiles>=23.2.1",
-    "openai>=1.6.0",
+    # LLM Unified Interface
+    "litellm>=1.30.0",
+    "openai>=1.6.0",  # Required by LiteLLM for OpenAI models
 ]
 
 [project.optional-dependencies]

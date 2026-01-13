@@ -12,7 +12,7 @@ import sys
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-from src.api.qwen_vlm import QwenVLMClient
+from src.api.litellm_vlm import UnifiedVLMClient
 from src.utils.config import get_config
 
 # Import PromptManager from backend
@@ -95,9 +95,9 @@ class PartAssociationModule:
             from src.vision_processing.vlm_step_extractor import VLMStepExtractor
             config = get_config()
             extractor = VLMStepExtractor()
-            primary_vlm = config.models.primary_vlm
-            self.vlm_client = extractor.clients.get(primary_vlm, QwenVLMClient())
-            logger.info(f"PartAssociationModule initialized with PRIMARY_VLM: {primary_vlm}")
+            ingestion_vlm = config.models.ingestion_vlm
+            self.vlm_client = extractor.clients.get(ingestion_vlm, QwenVLMClient())
+            logger.info(f"PartAssociationModule initialized with INGESTION_VLM: {ingestion_vlm}")
         else:
             self.vlm_client = vlm_client
             logger.info("PartAssociationModule initialized with provided VLM client")

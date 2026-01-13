@@ -7,33 +7,26 @@ from typing import List, Dict, Any
 from loguru import logger
 
 from ..config import get_settings
-from ..llm import QwenClient, DeepSeekClient, MoonshotClient
+from ..llm.litellm_client import UnifiedLLMClient
 from ..graph.graph_manager import get_graph_manager
 
 
 class GeneratorService:
     """Handles LLM-based response generation."""
-    
+
     def __init__(self):
         """Initialize generator with configured LLM client."""
         self.settings = get_settings()
         self.graph_manager = get_graph_manager()
-        
-        # Initialize appropriate LLM client
-        api_key = self.settings.get_llm_api_key()
-        provider = self.settings.rag_llm_provider
-        model = self.settings.rag_llm_model
-        
-        if provider == "qwen":
-            self.client = QwenClient(api_key, model)
-        elif provider == "deepseek":
-            self.client = DeepSeekClient(api_key, model)
-        elif provider == "moonshot":
-            self.client = MoonshotClient(api_key, model)
-        else:
-            raise ValueError(f"Unknown LLM provider: {provider}")
-        
-        logger.info(f"Initialized {provider} LLM for generation with graph support")
+
+        # Initialize LiteLLM client
+        api_keys = self.settings.get_api_keys_dict()
+        self.client = UnifiedLLMClient(
+            model=self.settings.rag_llm_model,
+            api_keys=api_keys
+        )
+
+        logger.info(f"Initialized LiteLLM generator with model: {self.settings.rag_llm_model}")
     
     def generate_response(
         self,

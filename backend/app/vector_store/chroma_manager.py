@@ -12,20 +12,27 @@ from loguru import logger
 from pathlib import Path
 
 from ..config import get_settings
-from ..llm.qwen_client import QwenClient
+from ..llm.litellm_client import UnifiedLLMClient
 
 
-class QwenEmbeddingFunction(ChromaEmbeddingFunction):
-    """Custom embedding function using Qwen."""
-    
-    def __init__(self, api_key: str, model: str = "text-embedding-v2"):
-        self.client = QwenClient(api_key)
+class LiteLLMEmbeddingFunction(ChromaEmbeddingFunction):
+    """Unified embedding function using LiteLLM."""
+
+    def __init__(self, model: str, api_keys: Dict[str, str]):
+        """
+        Initialize with LiteLLM model and API keys.
+
+        Args:
+            model: LiteLLM model identifier (e.g., "gemini/text-embedding-004", "text-embedding-3-large")
+            api_keys: Dictionary of API keys
+        """
+        self.client = UnifiedLLMClient(model=model, api_keys=api_keys)
         self.model = model
-    
+
     def __call__(self, input: List[str]) -> List[List[float]]:
         """Generate embeddings for input texts (batch)."""
-        return self.client.get_embeddings(input, model=self.model)
-    
+        return self.client.get_embeddings(input)
+
     def embed_query(self, input) -> List[float]:
         """Generate embedding for a single query text."""
         # ChromaDB passes input as a list containing the query text
@@ -35,30 +42,28 @@ class QwenEmbeddingFunction(ChromaEmbeddingFunction):
             text = input['input']
         else:
             text = str(input)
-        
-        logger.info(f"embed_query: input type={type(input)}, text='{text[:50]}'")
-        
+
+        logger.debug(f"embed_query ({self.model}): text='{text[:50]}'")
+
         # get_embeddings returns List[List[float]], we want the first embedding vector
-        embeddings = self.client.get_embeddings([text], model=self.model)
-        logger.info(f"embed_query: embeddings type={type(embeddings)}, len={len(embeddings) if isinstance(embeddings, list) else 'N/A'}")
-        
+        embeddings = self.client.get_embeddings([text])
+
         if embeddings and len(embeddings) > 0:
             result = embeddings[0]
-            logger.info(f"embed_query: result type={type(result)}, is_list={isinstance(result, list)}, len={len(result) if isinstance(result, list) else 'N/A'}")
-            
+
             # Ensure it's actually a list
             if not isinstance(result, list):
-                logger.error(f"embed_query returning wrong type: {type(result)}, first few values: {str(result)[:100]}")
+                logger.error(f"embed_query returning wrong type: {type(result)}")
                 raise TypeError(f"Expected list, got {type(result)}")
-            
+
             return result
         else:
             logger.error("embed_query: No embeddings returned!")
             raise ValueError("No embeddings returned from get_embeddings")
-    
+
     def name(self) -> str:
         """Return the name of this embedding function."""
-        return f"qwen-{self.model}"
+        return self.model
 
 
 class ChromaManager:
@@ -81,19 +86,13 @@ class ChromaManager:
             )
         )
         
-        # Set up embedding function based on provider
-        if self.settings.rag_embedding_provider == "qwen":
-            api_key = self.settings.dashscope_api_key
-            if not api_key:
-                raise ValueError("DASHSCOPE_API_KEY required for Qwen embeddings")
-            self.embedding_function = QwenEmbeddingFunction(
-                api_key=api_key,
-                model=self.settings.rag_embedding_model
-            )
-        else:
-            # For now, only Qwen embeddings supported
-            # DeepSeek/Moonshot don't have public embedding APIs yet
-            raise ValueError(f"Embedding provider '{self.settings.rag_embedding_provider}' not supported. Use 'qwen'.")
+        # Set up embedding function using LiteLLM
+        api_keys = self.settings.get_api_keys_dict()
+        self.embedding_function = LiteLLMEmbeddingFunction(
+            model=self.settings.rag_embedding_model,
+            api_keys=api_keys
+        )
+        logger.info(f"Using LiteLLM embeddings with model: {self.settings.rag_embedding_model}")
         
         # Get or create collection
         self.collection = self.client.get_or_create_collection(
