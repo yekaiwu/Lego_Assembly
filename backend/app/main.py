@@ -560,13 +560,21 @@ async def serve_image(
     Serve step images.
     """
     try:
+        # Resolve path relative to project root (parent of backend/)
+        # If path is relative (e.g., "output/temp_pages/page_001.png"), resolve it
         image_path = Path(path)
-        
+
+        # If not absolute, resolve relative to backend's parent directory (project root)
+        if not image_path.is_absolute():
+            project_root = Path(__file__).parent.parent.parent  # Go up from app/main.py to project root
+            image_path = project_root / image_path
+
         if not image_path.exists():
-            raise HTTPException(status_code=404, detail="Image not found")
-        
+            logger.error(f"Image not found at: {image_path}")
+            raise HTTPException(status_code=404, detail=f"Image not found: {path}")
+
         return FileResponse(image_path)
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -912,6 +920,43 @@ async def get_subassemblies(
         raise
     except Exception as e:
         logger.error(f"Error getting subassemblies: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/manual/{manual_id}/graph")
+async def get_full_graph(
+    manual_id: str = PathParam(..., description="Manual identifier")
+):
+    """
+    Get complete hierarchical graph structure for visualization.
+
+    Returns the full graph with:
+        - All nodes (model, subassemblies, parts)
+        - All edges (relationships)
+        - Metadata (total parts, steps, depth)
+        - Node attributes (type, layer, step_created, etc.)
+
+    Use this endpoint for graph visualization with tools like:
+    - ReactFlow
+    - Cytoscape
+    - D3.js
+    - Vis.js
+    """
+    try:
+        graph = graph_manager.load_graph(manual_id)
+
+        if not graph:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Graph not found for manual {manual_id}. Please process the manual first."
+            )
+
+        return graph
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting full graph: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

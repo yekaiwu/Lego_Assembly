@@ -185,19 +185,26 @@ class ManualDataProcessor:
             
             # Combine all content
             content = "\n".join(content_parts)
-            
-            # Determine image path
+
+            # Determine image path from extracted data
             image_path = None
-            temp_pages_dir = self.output_dir / "temp_pages"
-            # Pages are typically step_number + offset for cover pages
-            # Try to find the corresponding page
-            for page_num in range(1, 300):  # reasonable upper bound
-                page_path = temp_pages_dir / f"page_{page_num:03d}.png"
+            source_page_paths = extracted_step.get('_source_page_paths', [])
+            if source_page_paths and len(source_page_paths) > 0:
+                # Use the first source page path (steps may have multiple pages, but we use the first one)
+                raw_path = source_page_paths[0]
+                # Convert to Path object and ensure it exists
+                page_path = Path(raw_path)
                 if page_path.exists():
-                    # This is a heuristic - may need adjustment
-                    if page_num >= step_number:
-                        image_path = str(page_path)
-                        break
+                    image_path = str(page_path)
+                else:
+                    # Try relative to output dir if the path doesn't exist as-is
+                    alt_path = self.output_dir / Path(raw_path).name
+                    if alt_path.exists():
+                        image_path = str(alt_path)
+                    else:
+                        logger.warning(f"Image not found for step {step_number}: {raw_path}")
+            else:
+                logger.warning(f"No source page paths found for step {step_number}")
             
             # Process multimodal if enabled and client provided
             has_diagram = False

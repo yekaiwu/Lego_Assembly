@@ -119,7 +119,7 @@ class UnifiedVLMClient:
                 model=self.model,
                 messages=messages,
                 temperature=0.7,
-                max_tokens=2000
+                max_tokens=60000
             )
 
             result_text = response.choices[0].message.content
@@ -209,7 +209,7 @@ class UnifiedVLMClient:
                 model=self.model,
                 messages=messages,
                 temperature=0.7,
-                max_tokens=2000
+                max_tokens=60000
             )
 
             result_text = response.choices[0].message.content
@@ -393,7 +393,7 @@ If TWO steps exist, return an array with two elements: [{{...}}, {{...}}]"""
                 model=self.model,
                 messages=messages,
                 temperature=0.7,
-                max_tokens=1000
+                max_tokens=60000
             )
 
             # Handle case where content is None

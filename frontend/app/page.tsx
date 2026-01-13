@@ -8,7 +8,8 @@ import { ImageUpload } from '@/components/ImageUpload'
 import { VisualGuidance } from '@/components/VisualGuidance'
 import { useManualStore } from '@/lib/store/manualStore'
 import { api, StateAnalysisResponse } from '@/lib/api/client'
-import { MessageSquare, Camera, Loader2 } from 'lucide-react'
+import { MessageSquare, Camera, Loader2, Network } from 'lucide-react'
+import Link from 'next/link'
 
 type TabType = 'chat' | 'vision'
 

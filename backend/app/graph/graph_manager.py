@@ -36,7 +36,7 @@ class GraphManager:
             return self.graphs[manual_id]
         
         # Load from file
-        graph_path = Path(self.settings.OUTPUT_DIR) / f"{manual_id}_graph.json"
+        graph_path = Path(self.settings.output_dir) / f"{manual_id}_graph.json"
         
         if not graph_path.exists():
             logger.warning(f"Graph file not found: {graph_path}")
