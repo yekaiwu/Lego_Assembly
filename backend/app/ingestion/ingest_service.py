@@ -36,10 +36,10 @@ class IngestionService:
         if use_multimodal:
             api_keys = self.settings.get_api_keys_dict()
             self.embedding_client = UnifiedLLMClient(
-                model=self.settings.embedding_vlm,
+                model=self.settings.rag_embedding_model,
                 api_keys=api_keys
             )
-            logger.info(f"IngestionService initialized with LiteLLM embeddings ({self.settings.embedding_vlm})")
+            logger.info(f"IngestionService initialized with LiteLLM embeddings ({self.settings.rag_embedding_model})")
         else:
             self.embedding_client = None
             logger.info("IngestionService initialized (text-only mode)")

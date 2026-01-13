@@ -34,50 +34,71 @@ class DependencyGraph:
     def infer_dependencies(self, extracted_steps: List[Dict[str, Any]]):
         """
         Infer dependencies from extracted step information.
-        
+        Filters out errors and renumbers steps sequentially.
+
         Args:
-            extracted_steps: List of extracted step dictionaries
+            extracted_steps: List of extracted step dictionaries (may include errors)
         """
         logger.info("Inferring step dependencies...")
-        
-        # Add all steps to graph
-        for i, step_info in enumerate(extracted_steps):
-            # Use index-based numbering if step_number is None or invalid
-            raw_step_number = step_info.get("step_number")
-            if raw_step_number is None or not isinstance(raw_step_number, int):
-                step_number = i + 1
-                # Update the step_info with the corrected step number
-                step_info["step_number"] = step_number
+
+        # Filter out failed extractions (steps with "error" key)
+        valid_steps = []
+        for step_info in extracted_steps:
+            if "error" not in step_info:
+                valid_steps.append(step_info)
             else:
-                step_number = raw_step_number
-            
-            self.add_step(step_number, step_info)
+                old_num = step_info.get("step_number", "unknown")
+                logger.warning(f"Skipping step {old_num} due to extraction error")
+
+        logger.info(f"Valid steps: {len(valid_steps)}/{len(extracted_steps)}")
+
+        if not valid_steps:
+            logger.error("No valid steps to process!")
+            return
+
+        # ALWAYS renumber steps sequentially (1, 2, 3, ...)
+        # This fixes issues where VLM reads incorrect step numbers from images
+        step_number_mapping = {}  # old_number -> new_number
+
+        for i, step_info in enumerate(valid_steps):
+            old_step_number = step_info.get("step_number")
+            new_step_number = i + 1
+
+            # Track the mapping for dependency updates
+            if old_step_number:
+                step_number_mapping[old_step_number] = new_step_number
+
+            # Update step_info with sequential number
+            step_info["step_number"] = new_step_number
+
+            if old_step_number != new_step_number:
+                logger.debug(f"Renumbered step {old_step_number} → {new_step_number}")
+
+            self.add_step(new_step_number, step_info)
         
-        # Infer dependencies
-        for i, step_info in enumerate(extracted_steps):
-            raw_step_number = step_info.get("step_number")
-            if raw_step_number is None or not isinstance(raw_step_number, int):
-                step_number = i + 1
-            else:
-                step_number = raw_step_number
-            
+        # Infer dependencies using valid_steps with new numbering
+        for i, step_info in enumerate(valid_steps):
+            step_number = i + 1  # Already renumbered above
+
             # Method 1: Explicit dependencies from VLM extraction
             explicit_deps = step_info.get("dependencies", "")
             if explicit_deps:
-                dep_steps = self._parse_dependencies(explicit_deps)
-                for dep in dep_steps:
-                    if dep < step_number and dep in self.nodes:
-                        self.add_dependency(dep, step_number)
-            
+                old_dep_steps = self._parse_dependencies(explicit_deps)
+                # Map old step numbers to new ones
+                for old_dep in old_dep_steps:
+                    new_dep = step_number_mapping.get(old_dep, old_dep)
+                    if new_dep < step_number and new_dep in self.nodes:
+                        self.add_dependency(new_dep, step_number)
+
             # Method 2: Sequential dependency (each step depends on previous)
             if step_number > 1 and (step_number - 1) in self.nodes:
                 # Only add if no explicit dependencies were found
                 if not self.reverse_edges[step_number]:
                     self.add_dependency(step_number - 1, step_number)
-            
+
             # Method 3: Part-based dependency inference
-            self._infer_part_dependencies(step_number, step_info, extracted_steps[:i])
-        
+            self._infer_part_dependencies(step_number, step_info, valid_steps[:i])
+
         logger.info(f"Inferred dependencies for {len(self.nodes)} steps")
     
     def _parse_dependencies(self, dep_string: str) -> List[int]:
@@ -246,33 +267,45 @@ class DependencyGraph:
     def validate(self) -> Tuple[bool, List[str]]:
         """
         Validate the dependency graph.
-        
+
         Returns:
             (is_valid, list of validation errors)
         """
         errors = []
-        
+        warnings = []
+
         # Check for cycles
         sorted_steps = self.topological_sort()
         if len(sorted_steps) != len(self.nodes):
             errors.append("Cycle detected in dependency graph")
-        
-        # Check for missing steps
-        expected_steps = set(range(1, len(self.nodes) + 1))
-        actual_steps = set(self.nodes.keys())
-        missing = expected_steps - actual_steps
-        if missing:
-            errors.append(f"Missing steps: {sorted(missing)}")
-        
-        # Check for isolated nodes
+
+        # Check for missing steps (steps should be consecutive after renumbering)
+        if self.nodes:
+            min_step = min(self.nodes.keys())
+            max_step = max(self.nodes.keys())
+            expected_steps = set(range(min_step, max_step + 1))
+            actual_steps = set(self.nodes.keys())
+            missing = expected_steps - actual_steps
+
+            if missing:
+                # This is only an error if steps were not properly renumbered
+                errors.append(f"Missing steps: {sorted(missing)}")
+                logger.error(f"Step sequence has gaps: expected {min_step}-{max_step}, got {sorted(actual_steps)}")
+
+        # Check for isolated nodes (warn, not error - parallel subassemblies are valid)
         isolated = [
-            step for step in self.nodes 
+            step for step in self.nodes
             if not self.edges[step] and not self.reverse_edges[step] and step != 1
         ]
         if isolated:
-            errors.append(f"Isolated steps: {isolated}")
-        
+            warnings.append(f"Isolated steps (parallel subassemblies?): {isolated}")
+            logger.warning(f"Found isolated steps: {isolated}. This may indicate parallel subassemblies.")
+
         is_valid = len(errors) == 0
+
+        if warnings:
+            logger.info(f"Validation warnings: {'; '.join(warnings)}")
+
         return is_valid, errors
     
     def to_dict(self) -> Dict[str, Any]:

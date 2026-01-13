@@ -242,68 +242,77 @@ BUILD CONTEXT:
         # Main extraction instructions
         prompt_parts.append(f"""
 CURRENT TASK:
-Analyze {step_context}this LEGO instruction image.
+IMPORTANT: This page may contain ONE or MORE assembly steps. Analyze carefully and extract ALL steps shown.
 
-Extract detailed information and return ONLY valid JSON:
+{step_context}Return a JSON ARRAY containing ALL steps found on this page:
 
-{{
-  "step_number": <number or null>,
-  "parts_required": [
-    {{
-      "description": "part description",
-      "color": "color name",
-      "shape": "brick type and dimensions",
-      "part_id": "LEGO part ID if visible",
-      "quantity": <number>
+[
+  {{
+    "step_number": <number or null>,
+    "parts_required": [
+      {{
+        "description": "part description",
+        "color": "color name",
+        "shape": "brick type and dimensions",
+        "part_id": "LEGO part ID if visible",
+        "quantity": <number>
+      }}
+    ],
+    "existing_assembly": "description of already assembled parts shown",
+    "new_parts_to_add": [
+      "description of each new part being added in this step"
+    ],
+    "actions": [
+      {{
+        "action_verb": "attach|connect|place|align|rotate",
+        "target": "what is being attached",
+        "destination": "where it's being attached",
+        "orientation": "directional cues"
+      }}
+    ],
+    "spatial_relationships": {{
+      "position": "top|bottom|left|right|front|back|center",
+      "rotation": "rotation description if any",
+      "alignment": "alignment instructions"
+    }},
+    "dependencies": "which previous steps are prerequisites",
+    "notes": "any special instructions or warnings",
+
+    "subassembly_hint": {{
+      "is_new_subassembly": true/false,
+      "name": "descriptive name if new (e.g., 'wheel_assembly')",
+      "description": "what is being built (e.g., '4-wheel chassis')",
+      "continues_previous": true/false
+    }},
+
+    "context_references": {{
+      "references_previous_steps": true/false,
+      "which_steps": [list of step numbers referenced],
+      "reference_description": "what is being referenced (e.g., 'the base from step 4')"
     }}
-  ],
-  "existing_assembly": "description of already assembled parts shown",
-  "new_parts_to_add": [
-    "description of each new part being added in this step"
-  ],
-  "actions": [
-    {{
-      "action_verb": "attach|connect|place|align|rotate",
-      "target": "what is being attached",
-      "destination": "where it's being attached",
-      "orientation": "directional cues"
-    }}
-  ],
-  "spatial_relationships": {{
-    "position": "top|bottom|left|right|front|back|center",
-    "rotation": "rotation description if any",
-    "alignment": "alignment instructions"
-  }},
-  "dependencies": "which previous steps are prerequisites",
-  "notes": "any special instructions or warnings",
-
-  "subassembly_hint": {{
-    "is_new_subassembly": true/false,
-    "name": "descriptive name if new (e.g., 'wheel_assembly')",
-    "description": "what is being built (e.g., '4-wheel chassis')",
-    "continues_previous": true/false
-  }},
-
-  "context_references": {{
-    "references_previous_steps": true/false,
-    "which_steps": [list of step numbers referenced],
-    "reference_description": "what is being referenced (e.g., 'the base from step 4')"
   }}
-}}
+]
 
 IMPORTANT INSTRUCTIONS:
-1. Consider the build context and recent steps when analyzing this image
-2. If this step references previous work (e.g., "attach to base"), identify which step in "context_references"
-3. Determine if this is starting a new subassembly or continuing the current one
-4. Focus on what's NEW in this step, not what was already built
+1. Look carefully - the page may show 1, 2, or more steps (typically identified by step numbers in the image)
+2. Return ALL steps as an array, even if there's only one step
+3. Consider the build context and recent steps when analyzing
+4. If a step references previous work, identify which step in "context_references"
+5. Determine if each step starts a new subassembly or continues the current one
+6. Focus on what's NEW in each step, not what was already built
 
 RESPONSE CONSTRAINTS (CRITICAL):
 - Keep descriptions CONCISE (max 10-15 words per field)
 - Use short phrases, not full sentences
 - Prioritize accuracy over detail
 - If information is unclear, mark as null or "unclear"
-- Limit "actions" array to 3 most important actions
+- Limit "actions" array to 3 most important actions per step
 - Keep "existing_assembly" under 20 words
+- Return ONLY the JSON array, no additional text
+
+Example formats:
+- One step on page: [{{step 1 data}}]
+- Two steps on page: [{{step 1 data}}, {{step 2 data}}]
 """)
 
         return "\n".join(prompt_parts)
@@ -346,15 +355,25 @@ RESPONSE CONSTRAINTS (CRITICAL):
         """Validate that extraction result contains required fields."""
         if "error" in result:
             return False
-        
-        # Check for key fields
+
+        # Must have a step number (can be null, but field must exist)
+        if "step_number" not in result:
+            logger.warning("Missing step_number field")
+            return False
+
+        # Check for key fields - allow them to be empty lists/null
         required_fields = ["parts_required", "actions"]
-        
+
         for field in required_fields:
             if field not in result:
                 logger.warning(f"Missing required field: {field}")
                 return False
-        
+
+            # Ensure field is not None (should be at least an empty list/string)
+            if result[field] is None:
+                logger.warning(f"Field {field} is None, setting to empty list")
+                result[field] = []
+
         return True
 
     def refine_extraction(

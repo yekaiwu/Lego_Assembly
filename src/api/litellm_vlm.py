@@ -119,10 +119,15 @@ class UnifiedVLMClient:
                 model=self.model,
                 messages=messages,
                 temperature=0.7,
-                max_tokens=2000
+                max_tokens=60000
             )
 
             result_text = response.choices[0].message.content
+
+            # Handle None content
+            if result_text is None:
+                logger.error("LiteLLM returned None content for step extraction")
+                return [{"error": "LiteLLM returned None content"}]
 
             # Parse JSON response
             result = self._parse_response(result_text, use_json_mode)
@@ -204,10 +209,16 @@ class UnifiedVLMClient:
                 model=self.model,
                 messages=messages,
                 temperature=0.7,
-                max_tokens=2000
+                max_tokens=60000
             )
 
             result_text = response.choices[0].message.content
+
+            # Handle None content
+            if result_text is None:
+                logger.error("LiteLLM returned None content for context-aware extraction")
+                return [{"error": "LiteLLM returned None content"}]
+
             result = self._parse_response(result_text, use_json_mode=True)
             normalized_result = self._normalize_to_array(result)
 
@@ -221,52 +232,71 @@ class UnifiedVLMClient:
             return [{"error": str(e)}]
 
     def _build_extraction_prompt(self, step_number: Optional[int], use_json_mode: bool) -> str:
-        """Build extraction prompt."""
-        step_context = f"Step {step_number}: " if step_number else ""
+        """Build extraction prompt that handles multiple steps per page."""
+        step_hint = f"Look for step {step_number} specifically. " if step_number else ""
 
-        prompt = f"""Analyze {step_context}this LEGO instruction image and extract detailed information.
+        prompt = f"""IMPORTANT: This page may contain ONE or MORE assembly steps. Analyze carefully and extract ALL steps shown.
 
-Return ONLY valid JSON with this structure:
+{step_hint}Return a JSON ARRAY containing ALL steps found on this page:
 
-{{
-  "step_number": <number or null>,
-  "parts_required": [
-    {{
-      "description": "part description",
-      "color": "color name",
-      "shape": "brick type and dimensions",
-      "part_id": "LEGO part ID if visible",
-      "quantity": <number>
-    }}
-  ],
-  "existing_assembly": "description of already assembled parts shown",
-  "new_parts_to_add": [
-    "description of each new part being added in this step"
-  ],
-  "actions": [
-    {{
-      "action_verb": "attach|connect|place|align|rotate",
-      "target": "what is being attached",
-      "destination": "where it's being attached",
-      "orientation": "directional cues"
-    }}
-  ],
-  "spatial_relationships": {{
-    "position": "top|bottom|left|right|front|back|center",
-    "rotation": "rotation description if any",
-    "alignment": "alignment instructions"
-  }},
-  "dependencies": "which previous steps are prerequisites",
-  "notes": "any special instructions or warnings"
-}}
+[
+  {{
+    "step_number": <number or null>,
+    "parts_required": [
+      {{
+        "description": "part description",
+        "color": "color name",
+        "shape": "brick type and dimensions",
+        "part_id": "LEGO part ID if visible",
+        "quantity": <number>
+      }}
+    ],
+    "existing_assembly": "description of already assembled parts shown",
+    "new_parts_to_add": [
+      "description of each new part being added in this step"
+    ],
+    "actions": [
+      {{
+        "action_verb": "attach|connect|place|align|rotate",
+        "target": "what is being attached",
+        "destination": "where it's being attached",
+        "orientation": "directional cues"
+      }}
+    ],
+    "spatial_relationships": {{
+      "position": "top|bottom|left|right|front|back|center",
+      "rotation": "rotation description if any",
+      "alignment": "alignment instructions"
+    }},
+    "dependencies": "which previous steps are prerequisites",
+    "notes": "any special instructions or warnings"
+  }}
+]
 
-CRITICAL: Keep descriptions concise (max 10-15 words). Return ONLY the JSON, no additional text."""
+INSTRUCTIONS:
+1. Look carefully - the page may show 1, 2, or more steps
+2. Each step typically has a step number visible in the image
+3. Return ALL steps as an array, even if there's only one
+4. Keep descriptions concise (max 10-15 words per field)
+5. Return ONLY the JSON array, no additional text
+
+If only ONE step exists on the page, return an array with one element: [{{...}}]
+If TWO steps exist, return an array with two elements: [{{...}}, {{...}}]"""
 
         return prompt
 
     def _parse_response(self, response_text: str, use_json_mode: bool) -> Any:
         """Parse JSON response from VLM."""
         try:
+            # Handle None or empty response
+            if response_text is None:
+                logger.error("Cannot parse None response")
+                return {"error": "Response text is None"}
+
+            if not response_text.strip():
+                logger.error("Cannot parse empty response")
+                return {"error": "Response text is empty"}
+
             # Extract JSON from markdown code blocks if present
             if "```json" in response_text:
                 start = response_text.find("```json") + 7
@@ -285,8 +315,8 @@ CRITICAL: Keep descriptions concise (max 10-15 words). Return ONLY the JSON, no 
 
         except json.JSONDecodeError as e:
             logger.error(f"JSON parse error: {e}")
-            logger.debug(f"Response text: {response_text[:500]}")
-            return {"error": f"JSON parse error: {e}", "raw_response": response_text[:500]}
+            logger.debug(f"Response text: {response_text[:500] if response_text else 'None'}")
+            return {"error": f"JSON parse error: {e}", "raw_response": response_text[:500] if response_text else None}
 
     def _normalize_to_array(self, result: Any) -> List[Dict[str, Any]]:
         """Normalize result to array format."""
@@ -296,3 +326,89 @@ CRITICAL: Keep descriptions concise (max 10-15 words). Return ONLY the JSON, no 
             return [result]
         else:
             return [{"error": "Invalid result format", "raw": str(result)}]
+
+    def generate_text_description(
+        self,
+        image_path: str,
+        prompt: str,
+        cache_context: Optional[str] = None
+    ) -> str:
+        """
+        Generate text description of an image using the VLM.
+
+        Args:
+            image_path: Path to the image
+            prompt: Description prompt
+            cache_context: Optional cache context string
+
+        Returns:
+            Text description of the image
+        """
+        # Check cache
+        cache_key = f"{self.model}:desc:{image_path}:{cache_context}" if cache_context else f"{self.model}:desc:{image_path}"
+        cached = self.cache.get(self.model, cache_key, [image_path])
+        if cached:
+            logger.debug(f"Cache hit for description: {self.model}")
+            return cached if isinstance(cached, str) else str(cached)
+
+        # Prepare message with image
+        import base64
+        from pathlib import Path
+
+        path = Path(image_path)
+        if not path.exists():
+            logger.error(f"Image not found: {image_path}")
+            return ""
+
+        # Determine image format
+        suffix = path.suffix.lower()
+        mime_type = {
+            '.png': 'image/png',
+            '.jpg': 'image/jpeg',
+            '.jpeg': 'image/jpeg',
+            '.webp': 'image/webp',
+            '.gif': 'image/gif'
+        }.get(suffix, 'image/png')
+
+        # Read and encode
+        with open(image_path, 'rb') as f:
+            image_data = base64.b64encode(f.read()).decode('utf-8')
+
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{mime_type};base64,{image_data}"
+                    }
+                }
+            ]
+        }]
+
+        # Call LiteLLM
+        try:
+            response = litellm.completion(
+                model=self.model,
+                messages=messages,
+                temperature=0.7,
+                max_tokens=60000
+            )
+
+            # Handle case where content is None
+            content = response.choices[0].message.content
+            if content is None:
+                logger.warning(f"LiteLLM returned None content for text description")
+                return ""
+
+            description = content.strip()
+
+            # Cache result
+            self.cache.set(self.model, cache_key, description, [image_path])
+
+            return description
+
+        except Exception as e:
+            logger.error(f"LiteLLM text description failed: {e}")
+            return ""

@@ -8,7 +8,8 @@ import { ImageUpload } from '@/components/ImageUpload'
 import { VisualGuidance } from '@/components/VisualGuidance'
 import { useManualStore } from '@/lib/store/manualStore'
 import { api, StateAnalysisResponse } from '@/lib/api/client'
-import { MessageSquare, Camera, Loader2 } from 'lucide-react'
+import { MessageSquare, Camera, Loader2, Network } from 'lucide-react'
+import Link from 'next/link'
 
 type TabType = 'chat' | 'vision'
 
@@ -78,13 +79,22 @@ export default function Home() {
             </div>
             
             {selectedManual && (
-              <div className="text-sm text-gray-600">
-                Manual: <span className="font-semibold">{selectedManual}</span>
-                {currentStep && (
-                  <span className="ml-3">
-                    Step: <span className="font-semibold">{currentStep}</span>
-                  </span>
-                )}
+              <div className="flex items-center space-x-4">
+                <div className="text-sm text-gray-600">
+                  Manual: <span className="font-semibold">{selectedManual}</span>
+                  {currentStep && (
+                    <span className="ml-3">
+                      Step: <span className="font-semibold">{currentStep}</span>
+                    </span>
+                  )}
+                </div>
+                <Link
+                  href="/graph"
+                  className="flex items-center space-x-2 px-3 py-2 bg-purple-100 hover:bg-purple-200 text-purple-700 rounded-lg transition-colors text-sm font-medium"
+                >
+                  <Network className="w-4 h-4" />
+                  <span>View Graph</span>
+                </Link>
               </div>
             )}
           </div>

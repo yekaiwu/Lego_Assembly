@@ -31,7 +31,8 @@ from .models.schemas import (
     AssembledStructure,
     PartConnection,
     SpatialLayout,
-    PartInfo
+    PartInfo,
+    RetrievalResult
 )
 from .ingestion.ingest_service import get_ingestion_service
 from .rag.pipeline import get_rag_pipeline
@@ -266,18 +267,100 @@ async def query_multimodal(request: MultimodalQueryRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def clean_markdown(text: str) -> str:
+    """
+    Remove markdown formatting symbols from text for plain display.
+
+    Args:
+        text: Text with markdown formatting
+
+    Returns:
+        Cleaned text without markdown symbols
+    """
+    import re
+
+    # Remove bold/italic markers
+    text = re.sub(r'\*\*([^\*]+)\*\*', r'\1', text)  # **bold**
+    text = re.sub(r'\*([^\*]+)\*', r'\1', text)      # *italic*
+    text = re.sub(r'__([^_]+)__', r'\1', text)       # __bold__
+    text = re.sub(r'_([^_]+)_', r'\1', text)         # _italic_
+
+    # Remove code backticks
+    text = re.sub(r'`([^`]+)`', r'\1', text)         # `code`
+
+    # Clean up headers (keep the text, remove #)
+    text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
+
+    # Remove extra blank lines (more than 2 consecutive newlines)
+    text = re.sub(r'\n{3,}', '\n\n', text)
+
+    return text.strip()
+
+
 @app.get("/api/manual/{manual_id}/step/{step_number}", response_model=QueryResponse)
 async def get_step(
     manual_id: str = PathParam(..., description="Manual identifier"),
-    step_number: int = PathParam(..., description="Step number", ge=1)
+    step_number: int = PathParam(..., description="Step number", ge=1),
+    use_llm: bool = Query(False, description="Use LLM to generate formatted response (slower)")
 ):
     """
     Get detailed information for a specific step.
+
+    By default, returns the raw step data from ChromaDB (fast, no LLM).
+    Set use_llm=true to get an LLM-generated formatted response (slower, uses RAG).
     """
     try:
-        response = rag_pipeline.get_step_details(manual_id, step_number)
-        return response
-        
+        # Fast path: Just retrieve from ChromaDB without LLM
+        if not use_llm:
+            # Get step data from ChromaDB
+            results = chroma_manager.collection.get(
+                where={
+                    "$and": [
+                        {"manual_id": manual_id},
+                        {"chunk_type": "step"},
+                        {"step_number": step_number}
+                    ]
+                }
+            )
+
+            if not results or not results['documents'] or len(results['documents']) == 0:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Step {step_number} not found in manual {manual_id}"
+                )
+
+            # Extract the first result
+            content = results['documents'][0]
+            metadata = results['metadatas'][0]
+
+            # Clean markdown formatting from content
+            cleaned_content = clean_markdown(content)
+
+            # Create a simple response without LLM generation
+            source = RetrievalResult(
+                step_number=metadata.get('step_number', step_number),
+                content=cleaned_content,
+                similarity_score=1.0,
+                metadata=metadata,
+                image_path=metadata.get('image_path', '')
+            )
+
+            return QueryResponse(
+                answer=cleaned_content,  # Return cleaned content as answer
+                sources=[source],
+                current_step=step_number,
+                next_step=step_number + 1 if step_number < metadata.get('total_steps', 100) else None,
+                guidance=None,
+                parts_needed=None
+            )
+
+        # Slow path: Use RAG pipeline with LLM
+        else:
+            response = rag_pipeline.get_step_details(manual_id, step_number)
+            return response
+
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Step retrieval error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -560,13 +643,21 @@ async def serve_image(
     Serve step images.
     """
     try:
+        # Resolve path relative to project root (parent of backend/)
+        # If path is relative (e.g., "output/temp_pages/page_001.png"), resolve it
         image_path = Path(path)
-        
+
+        # If not absolute, resolve relative to backend's parent directory (project root)
+        if not image_path.is_absolute():
+            project_root = Path(__file__).parent.parent.parent  # Go up from app/main.py to project root
+            image_path = project_root / image_path
+
         if not image_path.exists():
-            raise HTTPException(status_code=404, detail="Image not found")
-        
+            logger.error(f"Image not found at: {image_path}")
+            raise HTTPException(status_code=404, detail=f"Image not found: {path}")
+
         return FileResponse(image_path)
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -912,6 +1003,43 @@ async def get_subassemblies(
         raise
     except Exception as e:
         logger.error(f"Error getting subassemblies: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/manual/{manual_id}/graph")
+async def get_full_graph(
+    manual_id: str = PathParam(..., description="Manual identifier")
+):
+    """
+    Get complete hierarchical graph structure for visualization.
+
+    Returns the full graph with:
+        - All nodes (model, subassemblies, parts)
+        - All edges (relationships)
+        - Metadata (total parts, steps, depth)
+        - Node attributes (type, layer, step_created, etc.)
+
+    Use this endpoint for graph visualization with tools like:
+    - ReactFlow
+    - Cytoscape
+    - D3.js
+    - Vis.js
+    """
+    try:
+        graph = graph_manager.load_graph(manual_id)
+
+        if not graph:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Graph not found for manual {manual_id}. Please process the manual first."
+            )
+
+        return graph
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting full graph: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
