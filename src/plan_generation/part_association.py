@@ -96,7 +96,7 @@ class PartAssociationModule:
             config = get_config()
             extractor = VLMStepExtractor()
             ingestion_vlm = config.models.ingestion_vlm
-            self.vlm_client = extractor.clients.get(ingestion_vlm, QwenVLMClient())
+            self.vlm_client = extractor._get_client(ingestion_vlm)
             logger.info(f"PartAssociationModule initialized with INGESTION_VLM: {ingestion_vlm}")
         else:
             self.vlm_client = vlm_client

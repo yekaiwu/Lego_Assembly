@@ -12,7 +12,7 @@ from loguru import logger
 project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-from src.api.qwen_vlm import QwenVLMClient
+from src.api.litellm_vlm import UnifiedVLMClient
 from src.utils.config import get_config as get_phase1_config
 from ..graph.graph_manager import get_graph_manager
 from .prompt_manager import PromptManager
@@ -20,7 +20,7 @@ from .prompt_manager import PromptManager
 
 class StateAnalyzer:
     """Analyzes user's physical assembly state from photos."""
-    
+
     def __init__(self, vlm_client=None):
         """Initialize with Phase 1 VLM client."""
         if vlm_client is None:
@@ -29,7 +29,7 @@ class StateAnalyzer:
             config = get_phase1_config()
             extractor = VLMStepExtractor()
             ingestion_vlm = config.models.ingestion_vlm
-            self.vlm_client = extractor.clients.get(ingestion_vlm, QwenVLMClient())
+            self.vlm_client = extractor._get_client(ingestion_vlm)
             logger.info(f"StateAnalyzer initialized with INGESTION_VLM: {ingestion_vlm}")
         else:
             self.vlm_client = vlm_client

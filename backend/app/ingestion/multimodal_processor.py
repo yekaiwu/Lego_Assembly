@@ -12,17 +12,17 @@ from loguru import logger
 project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-from src.api.qwen_vlm import QwenVLMClient
+from src.api.litellm_vlm import UnifiedVLMClient
 from src.utils.config import get_config as get_phase1_config
 
 
 class MultimodalProcessor:
     """
     Processes diagram images to generate text descriptions for embedding.
-    
+
     Uses configured VLM to generate rich text descriptions of diagrams, then embed those descriptions.
     """
-    
+
     def __init__(self, vlm_client=None, diagram_vlm: str = None):
         """
         Initialize with configured VLM client.
@@ -41,7 +41,7 @@ class MultimodalProcessor:
             if diagram_vlm is None:
                 diagram_vlm = config.models.diagram_vlm
 
-            self.vlm_client = extractor.clients.get(diagram_vlm, QwenVLMClient())
+            self.vlm_client = extractor._get_client(diagram_vlm)
             logger.info(f"MultimodalProcessor initialized with DIAGRAM_VLM: {diagram_vlm}")
         else:
             self.vlm_client = vlm_client
