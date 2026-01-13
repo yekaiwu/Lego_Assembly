@@ -1,1145 +1,614 @@
 """
-FastAPI Main Application for LEGO RAG System.
-Provides REST API endpoints for manual ingestion and querying.
+Main workflow orchestrator for LEGO Assembly System.
+Coordinates manual processing, VLM extraction, plan generation, and ingestion.
+Supports checkpointing to resume interrupted processing.
 """
 
-from fastapi import FastAPI, HTTPException, Query, Path as PathParam, UploadFile, File
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse
-from pathlib import Path
-from typing import Optional, List
-import uuid
-import shutil
+import argparse
 import json
+import sys
+from pathlib import Path
+from typing import Optional, Dict, Any
 from loguru import logger
 
-from .config import get_settings
-from .models.schemas import (
-    IngestionResponse,
-    QueryResponse,
-    ManualListResponse,
-    ManualMetadata,
-    StepListResponse,
-    StepInfo,
-    TextQueryRequest,
-    MultimodalQueryRequest,
-    HealthResponse,
-    StateAnalysisRequest,
-    StateAnalysisResponse,
-    ImageUploadResponse,
-    DetectedPart,
-    AssembledStructure,
-    PartConnection,
-    SpatialLayout,
-    PartInfo
+from src.vision_processing import ManualInputHandler, VLMStepExtractor, DependencyGraph
+from src.vision_processing.user_metadata_collector import UserMetadataCollector
+from src.vision_processing.metadata_models import UserProvidedMetadata
+from src.vision_processing.document_analyzer import (
+    convert_user_metadata_to_document_metadata,
+    extract_relevant_pages
 )
-from .ingestion.ingest_service import get_ingestion_service
-from .rag.pipeline import get_rag_pipeline
-from .vector_store.chroma_manager import get_chroma_manager
-from .vision import get_state_analyzer, get_state_comparator, get_guidance_generator
-from .graph.graph_manager import get_graph_manager
+from src.plan_generation import PlanStructureGenerator, GraphBuilder
+from src.utils import get_config, URLHandler
 
-# Initialize FastAPI app
-app = FastAPI(
-    title="LEGO Assembly RAG API",
-    description="Retrieval-Augmented Generation system for LEGO assembly guidance",
-    version="1.0.0"
-)
+# Import backend services for Phase 2
+sys.path.insert(0, str(Path(__file__).parent / "backend"))
+from app.ingestion.ingest_service import IngestionService
 
-# Configure CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # In production, specify actual origins
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Initialize services
-settings = get_settings()
-ingestion_service = get_ingestion_service()
-rag_pipeline = get_rag_pipeline()
-chroma_manager = get_chroma_manager()
-graph_manager = get_graph_manager()
-
-
-# ==================== Health & Status ====================
-
-@app.get("/", response_model=HealthResponse)
-async def root():
-    """Health check endpoint."""
-    try:
-        total_manuals = len(chroma_manager.get_all_manuals())
-        total_chunks = chroma_manager.count_documents()
-        
-        return HealthResponse(
-            status="healthy",
-            version="1.0.0",
-            vector_store_connected=True,
-            total_manuals=total_manuals,
-            total_chunks=total_chunks
-        )
-    except Exception as e:
-        logger.error(f"Health check failed: {e}")
-        return HealthResponse(
-            status="unhealthy",
-            version="1.0.0",
-            vector_store_connected=False,
-            total_manuals=0,
-            total_chunks=0
-        )
-
-
-@app.get("/health", response_model=HealthResponse)
-async def health_check():
-    """Detailed health check."""
-    return await root()
-
-
-# ==================== Ingestion API ====================
-
-@app.post("/api/ingest/manual/{manual_id}", response_model=IngestionResponse)
-async def ingest_manual(
-    manual_id: str = PathParam(..., description="Manual identifier (e.g., 6454922)")
-):
-    """
-    Ingest a specific manual into the vector store.
-    The manual files must exist in the output directory.
-    """
-    try:
-        result = ingestion_service.ingest_manual(manual_id)
-        
-        if result['status'] == 'error':
-            raise HTTPException(status_code=500, detail=result['message'])
-        
-        return IngestionResponse(**result)
-        
-    except FileNotFoundError as e:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Manual files not found for {manual_id}. Please process the manual first using main.py"
-        )
-    except Exception as e:
-        logger.error(f"Ingestion error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/api/ingest/all")
-async def ingest_all_manuals():
-    """
-    Ingest all available manuals from the output directory.
-    """
-    try:
-        result = ingestion_service.ingest_all_manuals()
-        return result
-    except Exception as e:
-        logger.error(f"Bulk ingestion error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.delete("/api/manual/{manual_id}")
-async def delete_manual(
-    manual_id: str = PathParam(..., description="Manual identifier")
-):
-    """
-    Remove a manual from the vector store.
-    """
-    try:
-        result = ingestion_service.remove_manual(manual_id)
-        
-        if result['status'] == 'error':
-            raise HTTPException(status_code=500, detail=result['message'])
-        
-        return result
-        
-    except Exception as e:
-        logger.error(f"Deletion error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ==================== Query API ====================
-
-@app.post("/api/query/text", response_model=QueryResponse)
-async def query_text(request: TextQueryRequest):
-    """
-    Process a text-based query about a manual.
-    Supports optional multimodal queries with user assembly images.
+class ProcessingCheckpoint:
+    """Manages processing checkpoints to enable resume functionality."""
     
-    Example request (text-only):
-    ```json
-    {
-        "manual_id": "6454922",
-        "question": "What parts do I need for step 5?",
-        "include_images": true,
-        "max_results": 5
-    }
-    ```
+    def __init__(self, output_dir: Path, assembly_id: str):
+        self.checkpoint_path = output_dir / f".{assembly_id}_checkpoint.json"
+        self.assembly_id = assembly_id
+        self.output_dir = output_dir
     
-    Example request (multimodal with images):
-    ```json
-    {
-        "manual_id": "6454922",
-        "question": "What's next?",
-        "session_id": "uuid-from-image-upload",
-        "include_images": true,
-        "max_results": 5
-    }
-    ```
-    """
-    try:
-        # Check if user provided images via session_id
-        user_images = None
-        if request.session_id:
-            upload_dir = Path(f"/tmp/lego_assembly_uploads/{request.session_id}")
-            if upload_dir.exists():
-                user_images = sorted([str(p) for p in upload_dir.glob("image_*.*")])
-                logger.info(f"Found {len(user_images)} user images for multimodal query")
-            else:
-                logger.warning(f"Session {request.session_id} not found, proceeding with text-only query")
-        
-        response = rag_pipeline.process_text_query(
-            manual_id=request.manual_id,
-            question=request.question,
-            max_results=request.max_results,
-            include_images=request.include_images,
-            user_images=user_images
-        )
-        
-        return response
-        
-    except Exception as e:
-        logger.error(f"Query error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/api/query/multimodal", response_model=QueryResponse)
-async def query_multimodal(request: MultimodalQueryRequest):
-    """
-    Process a multimodal query (text + user assembly images).
-    
-    User must first upload images via /api/vision/upload-images to get a session_id,
-    then use that session_id in this request.
-    
-    Example request:
-    ```json
-    {
-        "manual_id": "6454922",
-        "question": "What's next?",
-        "session_id": "uuid-from-upload",
-        "include_images": true,
-        "max_results": 5
-    }
-    ```
-    """
-    try:
-        # Get uploaded image paths
-        upload_dir = Path(f"/tmp/lego_assembly_uploads/{request.session_id}")
-        if not upload_dir.exists():
-            raise HTTPException(
-                status_code=404,
-                detail="Session not found. Please upload images first via /api/vision/upload-images"
-            )
-        
-        user_images = sorted([str(p) for p in upload_dir.glob("image_*.*")])
-        if not user_images:
-            raise HTTPException(
-                status_code=404,
-                detail="No images found for this session"
-            )
-        
-        logger.info(f"Processing multimodal query with {len(user_images)} images")
-        
-        response = rag_pipeline.process_text_query(
-            manual_id=request.manual_id,
-            question=request.question,
-            max_results=request.max_results,
-            include_images=request.include_images,
-            user_images=user_images
-        )
-        
-        return response
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Multimodal query error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/api/manual/{manual_id}/step/{step_number}", response_model=QueryResponse)
-async def get_step(
-    manual_id: str = PathParam(..., description="Manual identifier"),
-    step_number: int = PathParam(..., description="Step number", ge=1)
-):
-    """
-    Get detailed information for a specific step.
-    """
-    try:
-        response = rag_pipeline.get_step_details(manual_id, step_number)
-        return response
-        
-    except Exception as e:
-        logger.error(f"Step retrieval error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ==================== Manual Management ====================
-
-@app.get("/api/vector-store/inspect")
-async def inspect_vector_store(
-    manual_id: Optional[str] = None,
-    step_number: Optional[int] = None,
-    limit: int = 50,
-    show_content: bool = True
-):
-    """
-    Inspect vector store contents (for debugging).
-    
-    Query parameters:
-    - manual_id: Filter by specific manual (optional)
-    - step_number: Filter by specific step (optional, requires manual_id)
-    - limit: Max documents to return (default: 50, max: 500)
-    - show_content: Include document content in response (default: true)
-    """
-    try:
-        collection = chroma_manager.collection
-        
-        # Get collection stats
-        total_docs = collection.count()
-        
-        # Get manual IDs
-        manual_ids = chroma_manager.get_all_manuals()
-        
-        # Get stats per manual
-        manual_stats = {}
-        for mid in manual_ids:
-            count = chroma_manager.count_documents(mid)
-            manual_stats[mid] = count
-        
-        # Build where filter
-        where_filter = None
-        if manual_id and step_number:
-            where_filter = {
-                "$and": [
-                    {"manual_id": manual_id},
-                    {"step_number": step_number}
-                ]
-            }
-        elif manual_id:
-            where_filter = {"manual_id": manual_id}
-        
-        # Limit max to prevent performance issues
-        limit = min(limit, 500)
-        
-        # Get documents
-        if where_filter:
-            all_data = collection.get(where=where_filter, limit=limit)
-        else:
-            all_data = collection.get(limit=limit)
-        
-        # Format documents
-        documents = []
-        for i in range(len(all_data['ids'])):
-            doc = {
-                "id": all_data['ids'][i],
-                "metadata": all_data['metadatas'][i]
-            }
-            if show_content:
-                content = all_data['documents'][i]
-                doc["content"] = content[:500] + "..." if len(content) > 500 else content
-                doc["content_length"] = len(content)
-            documents.append(doc)
-        
-        # Get step numbers for manual if filtering
-        step_numbers = []
-        if manual_id:
-            manual_data = collection.get(
-                where={
-                    "$and": [
-                        {"manual_id": manual_id},
-                        {"chunk_type": "step"}
-                    ]
-                },
-                limit=1000
-            )
-            step_numbers = sorted([
-                m.get('step_number', 0) 
-                for m in manual_data['metadatas'] 
-                if m.get('step_number', 0) > 0
-            ])
-        
+    def load(self) -> Dict[str, Any]:
+        """Load checkpoint data if it exists."""
+        if self.checkpoint_path.exists():
+            with open(self.checkpoint_path, 'r') as f:
+                return json.load(f)
         return {
-            "total_documents": total_docs,
-            "total_manuals": len(manual_ids),
-            "manual_stats": manual_stats,
-            "filters": {
-                "manual_id": manual_id,
-                "step_number": step_number,
-                "limit": limit
-            },
-            "step_numbers": step_numbers if manual_id else None,
-            "documents_returned": len(documents),
-            "documents": documents,
-            "collection_name": chroma_manager.settings.collection_name,
-            "persist_directory": str(chroma_manager.settings.chroma_persist_dir)
+            "assembly_id": self.assembly_id,
+            "completed_steps": [],
+            "last_step": None,
+            "status": "not_started"
         }
-    except Exception as e:
-        logger.error(f"Error inspecting vector store: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/api/manuals", response_model=ManualListResponse)
-async def list_manuals():
-    """
-    Get list of all available manuals.
-    """
-    try:
-        manual_ids = chroma_manager.get_all_manuals()
-        
-        manuals = []
-        for manual_id in manual_ids:
-            # Get metadata from vector store
-            try:
-                results = chroma_manager.collection.get(
-                    where={
-                        "$and": [
-                            {"manual_id": manual_id},
-                            {"chunk_type": "metadata"}
-                        ]
-                    },
-                    limit=1
-                )
-                
-                if results and results['metadatas']:
-                    metadata = results['metadatas'][0]
-                    manuals.append(ManualMetadata(
-                        manual_id=manual_id,
-                        total_steps=metadata.get('total_steps', 0),
-                        generated_at=metadata.get('generated_at', ''),
-                        status="available"
-                    ))
-                else:
-                    # Fallback if no metadata found
-                    doc_count = chroma_manager.count_documents(manual_id)
-                    manuals.append(ManualMetadata(
-                        manual_id=manual_id,
-                        total_steps=doc_count - 1,  # Exclude metadata chunk
-                        generated_at="",
-                        status="available"
-                    ))
-            except Exception as e:
-                logger.warning(f"Could not fetch metadata for {manual_id}: {e}")
-                continue
-        
-        return ManualListResponse(
-            manuals=manuals,
-            total=len(manuals)
-        )
-        
-    except Exception as e:
-        logger.error(f"Error listing manuals: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/api/manual/{manual_id}/steps")
-async def list_manual_steps(
-    manual_id: str = PathParam(..., description="Manual identifier")
-):
-    """
-    Get all steps for a specific manual.
-    """
-    try:
-        # Get all step documents for this manual
-        results = chroma_manager.collection.get(
-            where={
-                "$and": [
-                    {"manual_id": manual_id},
-                    {"chunk_type": "step"}
-                ]
-            }
-        )
-        
-        if not results or not results['metadatas']:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Manual {manual_id} not found"
-            )
-        
-        steps = []
-        for metadata, content in zip(results['metadatas'], results['documents']):
-            steps.append({
-                "step_number": metadata.get('step_number', 0),
-                "has_parts": metadata.get('has_parts', False),
-                "parts_count": metadata.get('parts_count', 0),
-                "has_dependencies": metadata.get('has_dependencies', False),
-                "image_path": metadata.get('image_path', ''),
-                "preview": content[:200] + "..." if len(content) > 200 else content
-            })
-        
-        # Sort by step number
-        steps.sort(key=lambda x: x['step_number'])
-        
-        return {
-            "manual_id": manual_id,
-            "total_steps": len(steps),
-            "steps": steps
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error listing steps: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/api/manual/{manual_id}/extracted-steps")
-async def get_extracted_steps(
-    manual_id: str = PathParam(..., description="Manual identifier"),
-    limit: Optional[int] = Query(None, description="Limit number of steps to return", ge=1, le=100),
-    step_number: Optional[int] = Query(None, description="Get specific step only", ge=1)
-):
-    """
-    Get detailed extracted step data from Phase 1 processing.
     
-    Returns the raw extracted step information including parts, actions, and notes.
-    """
-    try:
-        extracted_path = Path(settings.output_dir) / f"{manual_id}_extracted.json"
+    def save(self, step: str, data: Optional[Dict[str, Any]] = None):
+        """Save checkpoint after completing a step."""
+        checkpoint = self.load()
+        checkpoint["last_step"] = step
+        if step not in checkpoint["completed_steps"]:
+            checkpoint["completed_steps"].append(step)
+        checkpoint["status"] = "in_progress"
+        if data:
+            checkpoint.update(data)
         
-        if not extracted_path.exists():
-            raise HTTPException(
-                status_code=404,
-                detail=f"Extracted data not found for manual {manual_id}. Please process the manual first using main.py"
-            )
-        
-        with open(extracted_path, 'r', encoding='utf-8') as f:
-            all_steps = json.load(f)
-        
-        # Filter to valid steps only
-        valid_steps = [s for s in all_steps if s.get("step_number") and s.get("step_number") > 0]
-        
-        # Filter by step number if specified
-        if step_number:
-            valid_steps = [s for s in valid_steps if s.get("step_number") == step_number]
-            if not valid_steps:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Step {step_number} not found in manual {manual_id}"
-                )
-        
-        # Apply limit if specified
-        if limit:
-            valid_steps = valid_steps[:limit]
-        
-        return {
-            "manual_id": manual_id,
-            "total_steps": len([s for s in all_steps if s.get("step_number") and s.get("step_number") > 0]),
-            "returned_steps": len(valid_steps),
-            "steps": valid_steps
-        }
-        
-    except HTTPException:
-        raise
-    except FileNotFoundError as e:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Extracted data file not found: {e}"
-        )
-    except Exception as e:
-        logger.error(f"Error getting extracted steps: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        with open(self.checkpoint_path, 'w') as f:
+            json.dump(checkpoint, f, indent=2)
+        logger.debug(f"Checkpoint saved: {step}")
+    
+    def mark_complete(self):
+        """Mark processing as complete."""
+        checkpoint = self.load()
+        checkpoint["status"] = "complete"
+        with open(self.checkpoint_path, 'w') as f:
+            json.dump(checkpoint, f, indent=2)
+    
+    def is_step_complete(self, step: str) -> bool:
+        """Check if a step was already completed."""
+        checkpoint = self.load()
+        return step in checkpoint.get("completed_steps", [])
+    
+    def clear(self):
+        """Remove checkpoint file."""
+        if self.checkpoint_path.exists():
+            self.checkpoint_path.unlink()
 
-
-# ==================== Image Serving ====================
-
-@app.get("/api/image")
-async def serve_image(
-    path: str = Query(..., description="Image path")
+def main(
+    input_path: str,
+    output_dir: str,
+    assembly_id: Optional[str] = None,
+    use_fallback: bool = False,
+    display_output: bool = True,
+    skip_ingestion: bool = False,
+    use_multimodal: bool = True,
+    resume: bool = True
 ):
     """
-    Serve step images.
-    """
-    try:
-        # Resolve path relative to project root (parent of backend/)
-        # If path is relative (e.g., "output/temp_pages/page_001.png"), resolve it
-        image_path = Path(path)
+    Main workflow: Process LEGO manual, generate plan, and ingest into vector store.
+    Supports checkpointing to resume interrupted processing.
 
-        # If not absolute, resolve relative to backend's parent directory (project root)
-        if not image_path.is_absolute():
-            project_root = Path(__file__).parent.parent.parent  # Go up from app/main.py to project root
-            image_path = project_root / image_path
-
-        if not image_path.exists():
-            logger.error(f"Image not found at: {image_path}")
-            raise HTTPException(status_code=404, detail=f"Image not found: {path}")
-
-        return FileResponse(image_path)
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error serving image: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ==================== Vision/State Analysis API ====================
-
-@app.post("/api/vision/upload-images", response_model=ImageUploadResponse)
-async def upload_assembly_images(
-    images: List[UploadFile] = File(..., description="1-4 images of assembly")
-):
-    """
-    Upload images of user's physical assembly.
-    Accepts 1-4 images from different angles (2+ recommended for better accuracy).
-    
-    Returns session_id for subsequent analysis.
-    """
-    try:
-        # Validate number of images
-        if len(images) < 1 or len(images) > 4:
-            raise HTTPException(
-                status_code=400,
-                detail="Please upload between 1 and 4 images"
-            )
-        
-        # Generate session ID
-        session_id = str(uuid.uuid4())
-        
-        # Create upload directory
-        upload_dir = Path(f"/tmp/lego_assembly_uploads/{session_id}")
-        upload_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Save uploaded files
-        uploaded_files = []
-        for i, image in enumerate(images):
-            # Validate file type
-            if not image.content_type.startswith("image/"):
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"File {image.filename} is not an image"
-                )
-            
-            # Save file
-            file_extension = Path(image.filename).suffix or ".jpg"
-            file_path = upload_dir / f"image_{i + 1}{file_extension}"
-            
-            with open(file_path, "wb") as f:
-                shutil.copyfileobj(image.file, f)
-            
-            uploaded_files.append(str(file_path))
-            logger.info(f"Saved image: {file_path}")
-        
-        return ImageUploadResponse(
-            uploaded_files=uploaded_files,
-            session_id=session_id,
-            message=f"Successfully uploaded {len(uploaded_files)} images",
-            status="success"
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error uploading images: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/api/vision/analyze", response_model=StateAnalysisResponse)
-async def analyze_assembly_state(
-    manual_id: str,
-    session_id: str,
-    output_dir: Optional[str] = "./output"
-):
-    """
-    Analyze assembly state from uploaded images.
-    
-    This endpoint:
-    1. Analyzes images using VLM to detect parts and state
-    2. Compares detected state with expected plan
-    3. Determines progress and identifies errors
-    4. Generates next-step guidance
-    
     Args:
-        manual_id: Manual identifier (must be processed by Phase 1)
-        session_id: Session ID from image upload
-        output_dir: Directory containing Phase 1 outputs
+        input_path: Path to PDF manual, image directory, or URL
+        output_dir: Directory for output files
+        assembly_id: Unique assembly identifier
+        use_fallback: Use fallback VLMs if primary fails
+        display_output: Display JSON and text plans in console
+        skip_ingestion: Skip Phase 2 (vector store ingestion)
+        use_multimodal: Use multimodal embeddings in ingestion
+        resume: Resume from checkpoint if available
+    """
+    logger.info("=" * 80)
+    logger.info("LEGO Assembly System - Complete Workflow")
+    logger.info("=" * 80)
     
-    Returns:
-        Complete state analysis with guidance
-    """
-    try:
-        logger.info(f"Analyzing assembly state for manual {manual_id}, session {session_id}")
-        
-        # Get uploaded image paths
-        upload_dir = Path(f"/tmp/lego_assembly_uploads/{session_id}")
-        if not upload_dir.exists():
-            raise HTTPException(
-                status_code=404,
-                detail="Session not found. Please upload images first."
-            )
-        
-        image_paths = sorted([str(p) for p in upload_dir.glob("image_*.*")])
-        if not image_paths:
-            raise HTTPException(
-                status_code=404,
-                detail="No images found for this session"
-            )
-        
-        logger.info(f"Found {len(image_paths)} images for analysis")
-        
-        # Initialize vision services
-        state_analyzer = get_state_analyzer()
-        state_comparator = get_state_comparator()
-        guidance_generator = get_guidance_generator()
-        
-        # Step 1: Analyze assembly state with VLM
-        logger.info("Step 1: Analyzing assembly state with VLM...")
-        detected_state = state_analyzer.analyze_assembly_state(
-            image_paths=image_paths,
-            manual_id=manual_id
-        )
-        
-        # Step 2: Compare with plan
-        logger.info("Step 2: Comparing with plan...")
-        comparison_result = state_comparator.compare_with_plan(
-            detected_state=detected_state,
-            manual_id=manual_id,
-            output_dir=output_dir
-        )
-        
-        # Step 3: Generate guidance
-        logger.info("Step 3: Generating guidance...")
-        guidance = guidance_generator.generate_guidance(
-            detected_state=detected_state,
-            comparison_result=comparison_result,
-            manual_id=manual_id,
-            output_dir=output_dir
-        )
-        
-        # Build comprehensive response
-        response = StateAnalysisResponse(
-            # Detected State
-            detected_parts=[
-                DetectedPart(**part) for part in detected_state.get("detected_parts", [])
-            ],
-            assembled_structures=[
-                AssembledStructure(**struct) for struct in detected_state.get("assembled_structures", [])
-            ],
-            connections=[
-                PartConnection(**conn) for conn in detected_state.get("connections", [])
-            ],
-            spatial_layout=SpatialLayout(**detected_state.get("spatial_layout", {})),
-            detection_confidence=detected_state.get("confidence", 0.0),
-            
-            # Progress
-            completed_steps=comparison_result.get("completed_steps", []),
-            current_step=comparison_result.get("current_step", 1),
-            progress_percentage=comparison_result.get("progress_percentage", 0.0),
-            total_steps=comparison_result.get("total_steps", 0),
-            
-            # Guidance
-            instruction=guidance.get("instruction", ""),
-            next_step_number=guidance.get("next_step_number"),
-            parts_needed=[
-                PartInfo(**part) for part in guidance.get("parts_needed", [])
-            ],
-            reference_image=guidance.get("reference_image"),
-            
-            # Errors
-            errors=comparison_result.get("errors", []),
-            error_corrections=guidance.get("error_corrections", []),
-            missing_parts=comparison_result.get("missing_parts", []),
-            
-            # Metadata
-            encouragement=guidance.get("encouragement", ""),
-            confidence=guidance.get("confidence", 0.0),
-            status="success"
-        )
-        
-        logger.info(f"Analysis complete: {response.progress_percentage:.1f}% progress")
-        return response
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error analyzing assembly state: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    # Setup
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Check if input is URL or local path
+    is_url = input_path.startswith('http://') or input_path.startswith('https://')
+    
+    if is_url:
+        logger.info(f"Input URL: {input_path}")
+        # Download PDF from URL
+        url_handler = URLHandler()
+        try:
+            input_path = url_handler.download_pdf(input_path)
+            logger.info(f"Downloaded to: {input_path}")
+        except Exception as e:
+            logger.error(f"Failed to download PDF from URL: {e}")
+            raise
+    else:
+        input_path = Path(input_path)
+    
+    if not assembly_id:
+        assembly_id = input_path.stem
+    
+    logger.info(f"Input: {input_path}")
+    logger.info(f"Output: {output_dir}")
+    logger.info(f"Assembly ID: {assembly_id}")
+    logger.info("")
+    
+    # Initialize checkpoint manager
+    checkpoint = ProcessingCheckpoint(output_dir, assembly_id)
+    
+    if resume:
+        checkpoint_data = checkpoint.load()
+        if checkpoint_data["status"] == "complete":
+            logger.info("✓ Processing already complete for this manual")
+            logger.info("  Use --no-resume to reprocess from scratch")
+            return
+        elif checkpoint_data["completed_steps"]:
+            logger.info(f"↻ Resuming from checkpoint: last completed step = {checkpoint_data['last_step']}")
+            logger.info(f"  Completed: {', '.join(checkpoint_data['completed_steps'])}")
+    else:
+        # Clear existing checkpoint if not resuming
+        checkpoint.clear()
+    
+    # Step 1: Manual Input Processing
+    if not checkpoint.is_step_complete("page_extraction"):
+        logger.info("Step 1/7: Processing manual input...")
+        manual_handler = ManualInputHandler(output_dir=output_dir / "temp_pages")
 
+        page_paths = manual_handler.process_manual(input_path)
+        logger.info(f"Extracted {len(page_paths)} pages")
 
-@app.delete("/api/vision/session/{session_id}")
-async def cleanup_session(
-    session_id: str = PathParam(..., description="Session ID to cleanup")
-):
-    """
-    Clean up uploaded images for a session.
-    """
-    try:
-        upload_dir = Path(f"/tmp/lego_assembly_uploads/{session_id}")
+        checkpoint.save("page_extraction", {"page_count": len(page_paths)})
+    else:
+        logger.info("Step 1/7: ✓ Page extraction already complete (skipping)")
+        # Load page paths from checkpoint
+        manual_handler = ManualInputHandler(output_dir=output_dir / "temp_pages")
+        page_paths = sorted(list((output_dir / "temp_pages").glob("page_*.png")))
+
+    # Step 2 (UPDATED): User-Provided Metadata Collection
+    if not checkpoint.is_step_complete("metadata_collection"):
+        logger.info("Step 2/7: Collecting manual metadata from user...")
+        logger.info("")
+
+        # Create metadata collector
+        collector = UserMetadataCollector(total_pages=len(page_paths))
+
+        # Collect metadata interactively
+        user_metadata = collector.collect_metadata_interactive()
+
+        # Filter to only instruction pages
+        relevant_page_paths = extract_relevant_pages(page_paths, user_metadata)
+
+        logger.info(f"Filtered: {len(page_paths)} → {len(relevant_page_paths)} instruction pages")
+
+        # Detect step boundaries on filtered pages
+        step_groups = manual_handler.detect_step_boundaries(relevant_page_paths)
+        logger.info(f"Detected {len(step_groups)} assembly steps")
+        logger.info("")
+
+        checkpoint.save("metadata_collection", {
+            "metadata": user_metadata.to_dict(),
+            "relevant_page_count": len(relevant_page_paths),
+            "step_count": len(step_groups)
+        })
+    else:
+        logger.info("Step 2/7: ✓ Metadata collection already complete (skipping)")
+        # Load from checkpoint
+        checkpoint_data = checkpoint.load()
+        user_metadata = UserProvidedMetadata.from_dict(checkpoint_data["metadata"])
+
+        # Re-extract relevant pages
+        relevant_page_paths = extract_relevant_pages(page_paths, user_metadata)
+        step_groups = manual_handler.detect_step_boundaries(relevant_page_paths)
+
+    # Convert to legacy DocumentMetadata for compatibility with Phase 1
+    doc_metadata = convert_user_metadata_to_document_metadata(user_metadata)
+    
+    # Step 3 (ENHANCED): Phase 1 - Context-Aware Step Extraction
+    if not checkpoint.is_step_complete("step_extraction"):
+        logger.info("Step 3/7: Extracting step information using VLM (Phase 1 - Context-Aware)...")
+        vlm_extractor = VLMStepExtractor()
+
+        # NEW: Initialize context-aware memory
+        vlm_extractor.initialize_memory(
+            main_build=doc_metadata.main_build,
+            window_size=2,  # Remember last 2 steps (reduced from 5 for faster processing)
+            max_tokens=1_000_000  # Gemini 2.5 Flash has 1M context window
+        )
+        logger.info(f"Initialized context-aware extraction for: {doc_metadata.main_build}")
+
+        # Check for partially completed extraction (incremental save file)
+        temp_extracted_path = output_dir / f"{assembly_id}_extracted_temp.json"
+        extracted_steps = []
+        start_step = 1
         
-        if upload_dir.exists():
-            shutil.rmtree(upload_dir)
-            logger.info(f"Cleaned up session: {session_id}")
-            return {
-                "status": "success",
-                "message": f"Session {session_id} cleaned up"
-            }
+        if temp_extracted_path.exists():
+            try:
+                with open(temp_extracted_path, 'r', encoding='utf-8') as f:
+                    extracted_steps = json.load(f)
+                start_step = len(extracted_steps) + 1
+                logger.info(f"Resuming from step {start_step} (found {len(extracted_steps)} cached steps)")
+                
+                # Restore context memory with previous steps
+                for step_data in extracted_steps:
+                    vlm_extractor.context_memory.add_step(step_data)
+            except Exception as e:
+                logger.warning(f"Failed to load temp extraction file: {e}. Starting from scratch.")
+                extracted_steps = []
+                start_step = 1
+
+        # Process each page (pages may contain multiple steps)
+        total_pages = len(step_groups)
+        for i in range(start_step - 1, total_pages):
+            page_num = i + 1
+            image_paths = step_groups[i]
+            logger.info(f"Processing page {page_num}/{total_pages}")
+
+            try:
+                # extract_step returns array of steps (1 or more per page)
+                results = vlm_extractor.extract_step(
+                    image_paths,
+                    step_number=None,  # VLM detects step numbers from image
+                    use_primary=not use_fallback,
+                    cache_context=assembly_id
+                )
+
+                # Add each step to extracted_steps with page tracking
+                for result in results:
+                    step_num = result.get("step_number", "unknown")
+                    logger.info(f"  └─ Extracted step {step_num}")
+                    # Track which page this step came from
+                    result["_source_page_idx"] = i
+                    result["_source_page_paths"] = image_paths
+                    extracted_steps.append(result)
+                
+                # INCREMENTAL SAVE: Save progress after each successful page
+                with open(temp_extracted_path, 'w', encoding='utf-8') as f:
+                    json.dump(extracted_steps, f, indent=2, ensure_ascii=False)
+                logger.debug(f"Saved progress: {len(extracted_steps)} steps from {page_num}/{total_pages} pages")
+
+            except Exception as e:
+                logger.error(f"Error extracting page {page_num}: {e}")
+                # Save progress even on error, then re-raise
+                with open(temp_extracted_path, 'w', encoding='utf-8') as f:
+                    json.dump(extracted_steps, f, indent=2, ensure_ascii=False)
+                logger.info(f"Progress saved. {len(extracted_steps)} steps extracted from {page_num-1}/{total_pages} pages before error.")
+                raise
+
+        logger.info(f"Extracted information from {len(extracted_steps)} steps across {total_pages} pages (with context)")
+        logger.info("")
+
+        # NEW: Step Recovery - Detect and recover missing steps
+        logger.info("Validating step sequence and recovering missing steps...")
+        from src.vision_processing.step_recovery import StepRecoveryModule
+
+        recovery_module = StepRecoveryModule(vlm_extractor)
+        missing_steps = recovery_module.detect_missing_steps(extracted_steps)
+
+        if missing_steps:
+            logger.warning(f"Found {len(missing_steps)} missing steps: {missing_steps}")
+            logger.info("Attempting recovery by re-extracting relevant pages...")
+
+            # Recover missing steps
+            extracted_steps, recovered_count = recovery_module.recover_missing_steps(
+                extracted_steps,
+                step_groups,
+                assembly_id
+            )
+
+            if recovered_count > 0:
+                logger.info(f"✓ Successfully recovered {recovered_count}/{len(missing_steps)} missing steps")
+            else:
+                logger.warning(f"✗ Could not recover any missing steps - proceeding with gaps")
+
+            # Re-check for remaining gaps
+            remaining_missing = recovery_module.detect_missing_steps(extracted_steps)
+            if remaining_missing:
+                logger.warning(f"Still missing {len(remaining_missing)} steps after recovery: {remaining_missing}")
         else:
-            raise HTTPException(
-                status_code=404,
-                detail="Session not found"
-            )
+            logger.info("✓ No missing steps detected - all steps sequential")
+
+        logger.info("")
+
+        # Save final extracted data
+        extracted_path = output_dir / f"{assembly_id}_extracted.json"
+        with open(extracted_path, 'w', encoding='utf-8') as f:
+            json.dump(extracted_steps, f, indent=2, ensure_ascii=False)
+        logger.info(f"Saved extracted data to {extracted_path}")
         
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error cleaning up session: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        # Clean up temp file after successful completion
+        if temp_extracted_path.exists():
+            temp_extracted_path.unlink()
+            logger.debug("Removed temporary extraction file")
+        logger.info("")
 
-
-# ==================== Hierarchical Graph API ====================
-
-@app.get("/api/manual/{manual_id}/graph/summary")
-async def get_graph_summary(
-    manual_id: str = PathParam(..., description="Manual identifier")
-):
-    """
-    Get summary of hierarchical assembly graph for a manual.
+        checkpoint.save("step_extraction")
+    else:
+        logger.info("Step 3/7: ✓ Step extraction already complete (skipping)")
+        # Load extracted data
+        extracted_path = output_dir / f"{assembly_id}_extracted.json"
+        with open(extracted_path, 'r', encoding='utf-8') as f:
+            extracted_steps = json.load(f)
     
-    Returns:
-        - Total nodes (parts, subassemblies)
-        - Total edges (relationships)
-        - Statistics by type
-    """
-    try:
-        summary = graph_manager.get_graph_summary(manual_id)
-        
-        if not summary:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Graph not found for manual {manual_id}. Please process the manual first."
-            )
-        
-        return summary
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting graph summary: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    # Step 4: Dependency Graph Construction
+    if not checkpoint.is_step_complete("dependency_graph"):
+        logger.info("Step 4/7: Building dependency graph...")
+        dep_graph = DependencyGraph()
+        dep_graph.infer_dependencies(extracted_steps)
 
+        # Validate graph
+        is_valid, errors = dep_graph.validate()
+        if not is_valid:
+            logger.warning(f"Dependency graph validation issues: {errors}")
+        else:
+            logger.info("Dependency graph is valid")
 
-@app.get("/api/manual/{manual_id}/graph/step/{step_number}/state")
-async def get_step_state(
-    manual_id: str = PathParam(..., description="Manual identifier"),
-    step_number: int = PathParam(..., description="Step number", ge=1)
-):
-    """
-    Get assembly state at a specific step from the hierarchical graph.
+        # Save dependency graph
+        graph_path = output_dir / f"{assembly_id}_dependencies.json"
+        with open(graph_path, 'w', encoding='utf-8') as f:
+            json.dump(dep_graph.to_dict(), f, indent=2)
+        logger.info(f"Saved dependency graph to {graph_path}")
+        logger.info("")
+
+        checkpoint.save("dependency_graph")
+    else:
+        logger.info("Step 4/7: ✓ Dependency graph already complete (skipping)")
+        # Load dependency graph
+        graph_path = output_dir / f"{assembly_id}_dependencies.json"
+        with open(graph_path, 'r', encoding='utf-8') as f:
+            dep_graph_dict = json.load(f)
+        dep_graph = DependencyGraph()
+        dep_graph.nodes = dep_graph_dict.get('nodes', {})
+        dep_graph.edges = dep_graph_dict.get('edges', [])
     
-    Returns:
-        - Parts added in this step
-        - Subassemblies created/modified
-        - Cumulative state
-        - Completion percentage
-    """
-    try:
-        step_state = graph_manager.get_step_state(manual_id, step_number)
-        
-        if not step_state:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Step state not found for manual {manual_id} step {step_number}"
-            )
-        
-        return step_state
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting step state: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    # Step 5: Hierarchical Assembly Graph Construction (Phase 2 - Already Implemented)
+    if not checkpoint.is_step_complete("hierarchical_graph"):
+        logger.info("Step 5/7: Building hierarchical assembly graph (Phase 2)...")
+        graph_builder = GraphBuilder()
 
+        hierarchical_graph = graph_builder.build_graph(
+            extracted_steps=extracted_steps,
+            assembly_id=assembly_id,
+            image_dir=output_dir / "temp_pages"
+        )
 
-@app.get("/api/manual/{manual_id}/graph/subassemblies")
-async def get_subassemblies(
-    manual_id: str = PathParam(..., description="Manual identifier")
-):
-    """
-    Get all subassemblies in a manual.
+        # Save hierarchical graph
+        hierarchical_graph_path = output_dir / f"{assembly_id}_graph.json"
+        graph_builder.save_graph(hierarchical_graph, hierarchical_graph_path)
+
+        logger.info(f"Hierarchical graph: {hierarchical_graph['metadata']['total_parts']} parts, "
+                    f"{hierarchical_graph['metadata']['total_subassemblies']} subassemblies")
+        logger.info(f"  (Enhanced with context-aware extraction hints)")
+        logger.info("")
+
+        checkpoint.save("hierarchical_graph")
+    else:
+        logger.info("Step 5/7: ✓ Hierarchical graph already complete (skipping)")
     
-    Returns list of subassemblies with:
-        - Name and description
-        - Step created
-        - Parts contained
-        - Parent relationships
-    """
-    try:
-        subassemblies = graph_manager.get_nodes_by_type(manual_id, "subassembly")
+    # Step 6: 3D Plan Generation
+    if not checkpoint.is_step_complete("plan_generation"):
+        logger.info("Step 6/7: Generating 3D assembly plan...")
+        plan_generator = PlanStructureGenerator()
         
-        if not subassemblies and subassemblies is not None:
-            # Empty list means no subassemblies found
-            return {
-                "manual_id": manual_id,
-                "total_subassemblies": 0,
-                "subassemblies": []
-            }
-        
-        if subassemblies is None:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Graph not found for manual {manual_id}"
-            )
-        
-        # Enrich each subassembly with its parts
-        enriched = []
-        for subasm in subassemblies:
-            parts = graph_manager.get_subassembly_parts(manual_id, subasm['node_id'])
-            enriched.append({
-                "node_id": subasm['node_id'],
-                "name": subasm['name'],
-                "description": subasm.get('description', ''),
-                "step_created": subasm.get('step_created', 0),
-                "steps_used": subasm.get('steps_used', []),
-                "parts": [
-                    {
-                        "name": p['name'],
-                        "color": p.get('color', ''),
-                        "shape": p.get('shape', ''),
-                        "role": p.get('role', '')
-                    }
-                    for p in parts
-                ]
-            })
-        
-        return {
-            "manual_id": manual_id,
-            "total_subassemblies": len(enriched),
-            "subassemblies": enriched
+        metadata = {
+            "source": str(input_path),
+            "manual_pages": len(page_paths),
+            "step_count": len(extracted_steps)
         }
         
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting subassemblies: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/api/manual/{manual_id}/graph")
-async def get_full_graph(
-    manual_id: str = PathParam(..., description="Manual identifier")
-):
-    """
-    Get complete hierarchical graph structure for visualization.
-
-    Returns the full graph with:
-        - All nodes (model, subassemblies, parts)
-        - All edges (relationships)
-        - Metadata (total parts, steps, depth)
-        - Node attributes (type, layer, step_created, etc.)
-
-    Use this endpoint for graph visualization with tools like:
-    - ReactFlow
-    - Cytoscape
-    - D3.js
-    - Vis.js
-    """
-    try:
-        graph = graph_manager.load_graph(manual_id)
-
-        if not graph:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Graph not found for manual {manual_id}. Please process the manual first."
-            )
-
-        return graph
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting full graph: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/api/manual/{manual_id}/progress")
-async def get_assembly_progress(
-    manual_id: str = PathParam(..., description="Manual identifier"),
-    session_id: Optional[str] = None
-):
-    """
-    Calculate assembly progress from current state.
-    
-    If session_id provided, analyzes uploaded images to determine progress.
-    Otherwise returns overall manual statistics.
-    
-    Returns:
-        - Progress percentage
-        - Completed subassemblies
-        - Remaining subassemblies
-        - Next major component
-    """
-    try:
-        graph = graph_manager.load_graph(manual_id)
+        assembly_plan = plan_generator.generate_plan(
+            extracted_steps=extracted_steps,
+            dependency_graph=dep_graph,
+            assembly_id=assembly_id,
+            metadata=metadata
+        )
         
-        if not graph:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Graph not found for manual {manual_id}"
-            )
+        # Export plan
+        json_plan_path = output_dir / f"{assembly_id}_plan.json"
+        plan_generator.export_plan(assembly_plan, json_plan_path, format="json")
         
-        metadata = graph.get('metadata', {})
-        total_steps = metadata.get('total_steps', 0)
+        text_plan_path = output_dir / f"{assembly_id}_plan.txt"
+        plan_generator.export_plan(assembly_plan, text_plan_path, format="text")
         
-        # If session_id provided, detect subassemblies from images
-        if session_id:
-            upload_dir = Path(f"/tmp/lego_assembly_uploads/{session_id}")
-            if not upload_dir.exists():
-                raise HTTPException(
-                    status_code=404,
-                    detail="Session not found"
-                )
+        logger.info(f"Validation: {assembly_plan['validation']['summary']}")
+        logger.info("")
+        
+        checkpoint.save("plan_generation")
+        
+        # Display plans in console if requested
+        if display_output:
+            logger.info("")
+            logger.info("=" * 80)
+            logger.info("STRUCTURED PLAN (JSON)")
+            logger.info("=" * 80)
+            print("\n" + json.dumps(assembly_plan, indent=2, ensure_ascii=False))
             
-            image_paths = sorted([str(p) for p in upload_dir.glob("image_*.*")])
+            logger.info("")
+            logger.info("=" * 80)
+            logger.info("NATURAL LANGUAGE PLAN (TEXT)")
+            logger.info("=" * 80)
+            with open(text_plan_path, 'r', encoding='utf-8') as f:
+                print("\n" + f.read())
+    else:
+        logger.info("Step 6/7: ✓ Plan generation already complete (skipping)")
+        json_plan_path = output_dir / f"{assembly_id}_plan.json"
+        text_plan_path = output_dir / f"{assembly_id}_plan.txt"
+        with open(json_plan_path, 'r', encoding='utf-8') as f:
+            assembly_plan = json.load(f)
+    
+    # Step 7: Vector Store Ingestion (Phase 2)
+    if skip_ingestion:
+        logger.info("Step 7/7: ✗ Vector store ingestion skipped (--skip-ingestion)")
+    elif not checkpoint.is_step_complete("ingestion"):
+        logger.info("Step 7/7: Ingesting into vector store...")
+        logger.info("  (This creates searchable embeddings with multimodal fusion)")
+        
+        try:
+            ingestion_service = IngestionService(use_multimodal=use_multimodal)
+            result = ingestion_service.ingest_manual(assembly_id)
             
-            if image_paths:
-                # Detect subassemblies
-                state_analyzer = get_state_analyzer()
-                subasm_detection = state_analyzer.detect_subassemblies(
-                    image_paths=image_paths,
-                    manual_id=manual_id
-                )
-                
-                estimated_step = subasm_detection.get('estimated_step')
-                
-                if estimated_step:
-                    step_state = graph_manager.get_step_state(manual_id, estimated_step)
-                    
-                    if step_state:
-                        final_state = step_state.get('final_state', {})
-                        progress = final_state.get('completion_percentage', 0.0)
-                        
-                        # Get completed and remaining subassemblies
-                        all_subassemblies = graph_manager.get_nodes_by_type(manual_id, "subassembly")
-                        
-                        completed = []
-                        remaining = []
-                        
-                        for subasm in all_subassemblies:
-                            if subasm.get('step_created', 999) <= estimated_step:
-                                completed.append({
-                                    "name": subasm['name'],
-                                    "completed_at_step": subasm.get('step_created', 0)
-                                })
-                            else:
-                                remaining.append({
-                                    "name": subasm['name'],
-                                    "starts_at_step": subasm.get('step_created', 0)
-                                })
-                        
-                        return {
-                            "manual_id": manual_id,
-                            "progress_percentage": progress,
-                            "estimated_step": estimated_step,
-                            "total_steps": total_steps,
-                            "completed_subassemblies": completed,
-                            "remaining_subassemblies": remaining,
-                            "confidence": subasm_detection.get('step_confidence', 0.0)
-                        }
-        
-        # Default: return overall statistics
-        all_subassemblies = graph_manager.get_nodes_by_type(manual_id, "subassembly")
-        
-        return {
-            "manual_id": manual_id,
-            "total_steps": total_steps,
-            "total_subassemblies": len(all_subassemblies) if all_subassemblies else 0,
-            "total_parts": metadata.get('total_parts', 0),
-            "subassemblies": [
-                {
-                    "name": s['name'],
-                    "created_at_step": s.get('step_created', 0)
-                }
-                for s in (all_subassemblies or [])
-            ]
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting assembly progress: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/api/manual/{manual_id}/graph/node/{node_id}/hierarchy")
-async def get_node_hierarchy(
-    manual_id: str = PathParam(..., description="Manual identifier"),
-    node_id: str = PathParam(..., description="Node identifier")
-):
-    """
-    Get hierarchical path from root to a specific node.
+            if result['status'] == 'success':
+                logger.info(f"✓ Successfully ingested manual {assembly_id}")
+                logger.info(f"  Steps: {result['steps_ingested']}")
+                logger.info(f"  Parts: {result['parts_ingested']}")
+                logger.info(f"  Chunks: {result['chunks_created']}")
+                checkpoint.save("ingestion")
+            else:
+                logger.error(f"✗ Ingestion failed: {result['message']}")
+                logger.warning("  Phase 1 outputs are still available, but manual won't be searchable")
+        except Exception as e:
+            logger.error(f"✗ Ingestion error: {e}")
+            logger.warning("  Phase 1 outputs are still available, but manual won't be searchable")
+    else:
+        logger.info("Step 7/7: ✓ Vector store ingestion already complete (skipping)")
     
-    Shows how a part or subassembly fits into the overall assembly structure.
+    logger.info("")
+    logger.info("=" * 80)
+    logger.info("✓ Processing complete!")
+    logger.info(f"  Manual ID: {assembly_id}")
+    logger.info(f"  JSON Plan: {json_plan_path}")
+    logger.info(f"  Text Plan: {text_plan_path}")
+    if not skip_ingestion:
+        logger.info(f"  Vector Store: Ready for queries")
+    logger.info("=" * 80)
     
-    Returns:
-        - Path from root model to target node
-        - Each node's type and description
-        - Step information
-    """
-    try:
-        path = graph_manager.get_assembly_path(manual_id, node_id)
-        
-        if not path:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Node {node_id} not found in manual {manual_id}"
-            )
-        
-        return {
-            "manual_id": manual_id,
-            "target_node_id": node_id,
-            "hierarchy_depth": len(path),
-            "path": [
-                {
-                    "node_id": node['node_id'],
-                    "type": node.get('type', 'unknown'),
-                    "name": node.get('name', ''),
-                    "step_created": node.get('step_created', 0),
-                    "layer": node.get('layer', 0)
-                }
-                for node in path
-            ]
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting node hierarchy: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ==================== Startup & Shutdown ====================
-
-@app.on_event("startup")
-async def startup_event():
-    """Initialize services on startup."""
-    logger.info("Starting LEGO RAG API server")
-    logger.info(f"Vector store: {settings.chroma_persist_dir}")
-    logger.info(f"Output directory: {settings.output_dir}")
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Cleanup on shutdown."""
-    logger.info("Shutting down LEGO RAG API server")
-
+    # Mark checkpoint as complete
+    checkpoint.mark_complete()
+    
+    return assembly_plan
 
 if __name__ == "__main__":
-    import uvicorn
-    
-    uvicorn.run(
-        "app.main:app",
-        host=settings.api_host,
-        port=settings.api_port,
-        reload=True,
-        log_level=settings.log_level.lower()
+    parser = argparse.ArgumentParser(
+        description="LEGO Assembly System - Complete Workflow (Extraction + Ingestion)"
     )
+    
+    parser.add_argument(
+        "input",
+        type=str,
+        nargs='?',  # Make input optional
+        default=None,
+        help="Path to LEGO instruction manual (PDF), image directory, or URL. If not provided, will prompt for URL."
+    )
+    
+    parser.add_argument(
+        "-o", "--output",
+        type=str,
+        default="./output",
+        help="Output directory for generated plans (default: ./output)"
+    )
+    
+    parser.add_argument(
+        "-id", "--assembly-id",
+        type=str,
+        default=None,
+        help="Assembly identifier (default: input filename)"
+    )
+    
+    parser.add_argument(
+        "--use-fallback",
+        action="store_true",
+        help="Use fallback VLMs if primary fails"
+    )
+    
+    parser.add_argument(
+        "--no-display",
+        action="store_true",
+        help="Don't display plans in console (only save to files)"
+    )
+    
+    parser.add_argument(
+        "--skip-ingestion",
+        action="store_true",
+        help="Skip vector store ingestion (Phase 2) - only generate files"
+    )
+    
+    parser.add_argument(
+        "--no-multimodal",
+        action="store_true",
+        help="Use text-only embeddings instead of multimodal (faster but less accurate)"
+    )
+    
+    parser.add_argument(
+        "--no-resume",
+        action="store_true",
+        help="Start from scratch instead of resuming from checkpoint"
+    )
+    
+    parser.add_argument(
+        "--cache",
+        action="store_true",
+        help="Enable caching of VLM responses (disabled by default)"
+    )
+
+    parser.add_argument(
+        "--log-level",
+        type=str,
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help="Logging level (default: INFO)"
+    )
+    
+    args = parser.parse_args()
+    
+    # Configure logging
+    logger.remove()
+    logger.add(
+        lambda msg: print(msg, end=""),
+        level=args.log_level,
+        format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | <level>{message}</level>"
+    )
+    
+    # Handle cache settings (disabled by default)
+    if args.cache:
+        import os
+        os.environ["CACHE_ENABLED"] = "true"
+        logger.info("Cache enabled - will reuse previous VLM responses")
+    
+    # Get input (from args or prompt)
+    input_path = args.input
+    
+    if not input_path:
+        # Interactive mode: prompt for URL
+        print("\n" + "=" * 80)
+        print("LEGO Assembly System - Interactive Mode")
+        print("=" * 80)
+        print("\nPlease enter the URL to the LEGO instruction manual PDF:")
+        print("Example: https://www.lego.com/cdn/product-assets/product.bi.core.pdf/6521147.pdf")
+        print()
+        
+        try:
+            input_path = input("URL: ").strip()
+            
+            if not input_path:
+                print("Error: No URL provided.")
+                exit(1)
+            
+            # Validate it looks like a URL
+            if not (input_path.startswith('http://') or input_path.startswith('https://')):
+                print(f"Warning: '{input_path}' doesn't look like a URL.")
+                confirm = input("Continue anyway? (y/n): ").strip().lower()
+                if confirm != 'y':
+                    print("Cancelled.")
+                    exit(0)
+        
+        except KeyboardInterrupt:
+            print("\n\nCancelled by user.")
+            exit(0)
+        except EOFError:
+            print("\n\nError: No input provided.")
+            exit(1)
+    
+    # Run main workflow
+    try:
+        main(
+            input_path=input_path,
+            output_dir=args.output,
+            assembly_id=args.assembly_id,
+            use_fallback=args.use_fallback,
+            display_output=not args.no_display,
+            skip_ingestion=args.skip_ingestion,
+            use_multimodal=not args.no_multimodal,
+            resume=not args.no_resume
+        )
+    except Exception as e:
+        logger.exception(f"Error during execution: {e}")
+        exit(1)
 

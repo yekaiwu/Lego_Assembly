@@ -80,7 +80,7 @@ export default function StepNavigator() {
         <div className="bg-gray-50 rounded-lg p-4 space-y-3">
           <div>
             <h3 className="font-semibold text-gray-900 mb-2">Instructions:</h3>
-            <p className="text-gray-700 text-sm leading-relaxed">
+            <p className="text-gray-700 text-sm leading-relaxed whitespace-pre-wrap">
               {stepData.answer}
             </p>
           </div>
@@ -100,7 +100,7 @@ export default function StepNavigator() {
 
           {stepData.guidance && (
             <div className="bg-blue-50 border border-blue-200 rounded p-3">
-              <p className="text-sm text-blue-800">💡 {stepData.guidance}</p>
+              <p className="text-sm text-blue-800 whitespace-pre-wrap">💡 {stepData.guidance}</p>
             </div>
           )}
         </div>

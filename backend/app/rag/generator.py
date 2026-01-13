@@ -37,13 +37,13 @@ class GeneratorService:
     ) -> str:
         """
         Generate a response using retrieved contexts with optional graph enrichment.
-        
+
         Args:
             query: User query
             contexts: Retrieved context chunks
             manual_id: Manual identifier
             include_graph_context: Whether to enrich with graph context
-        
+
         Returns:
             Generated response text
         """
@@ -51,41 +51,41 @@ class GeneratorService:
             # Enrich contexts with graph information if available
             if include_graph_context:
                 contexts = self.enrich_with_graph_context(contexts, manual_id)
-            
+
             # Build context string
             context_str = self._format_contexts(contexts)
-            
+
             # Create system prompt
-            system_prompt = """You are a helpful LEGO assembly assistant. Your role is to provide clear, 
+            system_prompt = """You are a helpful LEGO assembly assistant. Your role is to provide clear,
             step-by-step guidance for building LEGO models based on instruction manuals.
-            
-            Use the provided context to answer questions accurately. If you reference specific steps, 
+
+            Use the provided context to answer questions accurately. If you reference specific steps,
             mention the step number. If parts are mentioned, describe them clearly with color and shape.
-            
-            When structural information is available (subassemblies, part roles, hierarchies), include 
+
+            When structural information is available (subassemblies, part roles, hierarchies), include
             it to help the user understand how components fit into the larger assembly.
-            
-            Be concise but thorough. If the user asks about a specific step, provide detailed instructions 
+
+            Be concise but thorough. If the user asks about a specific step, provide detailed instructions
             for that step and mention what comes before/after if relevant.
-            
+
             If the context doesn't contain enough information to answer the question, say so clearly."""
-            
+
             # Create user prompt
             user_prompt = f"""Manual ID: {manual_id}
-            
+
 User Question: {query}
 
 Relevant Context:
 {context_str}
 
 Please provide a helpful answer based on the context above."""
-            
+
             # Call LLM
             messages = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ]
-            
+
             answer = self.client.generate(
                 messages=messages,
                 temperature=0.7,
@@ -93,7 +93,7 @@ Please provide a helpful answer based on the context above."""
             )
             logger.info(f"Generated response for query: {query[:50]}...")
             return answer
-            
+
         except Exception as e:
             logger.error(f"Error generating response: {e}")
             return "I apologize, but I encountered an error generating a response. Please try again."
