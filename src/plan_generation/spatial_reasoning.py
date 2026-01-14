@@ -1,6 +1,11 @@
 """
 Spatial Reasoning Engine: Determines 3D coordinates, orientations, and
 connection points for LEGO parts in assembly.
+
+Note: This module requires spatial_relationships data from VLM extraction.
+If spatial relationships are disabled via --no-spatial-relationships flag,
+methods in this module will receive empty/missing spatial data and return
+default positions.
 """
 
 import numpy as np
@@ -8,7 +13,13 @@ from typing import Dict, Any, List, Optional, Tuple
 from loguru import logger
 
 class SpatialReasoning:
-    """Handles 3D spatial calculations for LEGO assembly."""
+    """
+    Handles 3D spatial calculations for LEGO assembly.
+
+    This module processes spatial_relationships data extracted by the VLM.
+    When spatial relationships are disabled, methods will gracefully handle
+    missing data by returning default values.
+    """
     
     # LEGO stud dimensions (1 stud = 8mm)
     STUD_SIZE_MM = 8.0
@@ -34,15 +45,18 @@ class SpatialReasoning:
     ) -> Dict[str, float]:
         """
         Calculate 3D position for a part based on spatial relationships.
-        
+
         Args:
             target_info: Information about part to place
             reference_parts: Already-placed parts for reference
             spatial_relationship: Spatial relationship description from VLM
-        
+
         Returns:
             Dictionary with x, y, z coordinates in studs
         """
+        # Handle None or empty spatial_relationship
+        if not spatial_relationship:
+            spatial_relationship = {}
         position_desc = (spatial_relationship.get("position") or "").lower()
         
         # If no reference parts, place at origin
@@ -100,14 +114,17 @@ class SpatialReasoning:
     ) -> Dict[str, float]:
         """
         Calculate rotation angles for a part.
-        
+
         Args:
             target_info: Part information
             spatial_relationship: Spatial relationship with rotation info
-        
+
         Returns:
             Dictionary with x, y, z rotation angles in degrees
         """
+        # Handle None or empty spatial_relationship
+        if not spatial_relationship:
+            spatial_relationship = {}
         rotation_desc = (spatial_relationship.get("rotation") or "").lower()
         
         # Default: no rotation

@@ -83,9 +83,9 @@ class PlanStructureGenerator:
             
             # Extract and match parts
             parts_in_step = self._match_parts(step_info.get("parts_required", []))
-            
+
             # Calculate spatial positions for new parts
-            spatial_rel = step_info.get("spatial_relationships", {})
+            spatial_rel = step_info.get("spatial_relationships") or {}
             positioned_parts = []
             
             for part in parts_in_step:

@@ -20,8 +20,9 @@ from .part_association import PartAssociationModule, PartCatalog
 class SubassemblyDetector:
     """Detects subassemblies using VLM-guided heuristics."""
 
-    def __init__(self, vlm_client: UnifiedVLMClient):
+    def __init__(self, vlm_client: UnifiedVLMClient, enable_spatial_relationships: bool = True):
         self.vlm_client = vlm_client
+        self.enable_spatial_relationships = enable_spatial_relationships
     
     def detect_subassemblies(
         self,
@@ -99,7 +100,7 @@ class SubassemblyDetector:
         notes = (step.get("notes") or "").lower()  # Handle None explicitly
         
         has_functional_parts = any(
-            any(kw in part.get("shape", "").lower() or kw in part.get("description", "").lower() 
+            any(kw in (part.get("shape") or "").lower() or kw in (part.get("description") or "").lower()
                 for kw in functional_keywords)
             for part in parts
         )
@@ -157,7 +158,7 @@ class SubassemblyDetector:
         # Look for key functional parts
         functional_parts = []
         for part in parts:
-            shape = part.get("shape", "").lower()
+            shape = (part.get("shape") or "").lower()
             if any(kw in shape for kw in ["wheel", "wing", "door", "window", "roof", "base"]):
                 functional_parts.append(shape)
         
@@ -191,7 +192,7 @@ class SubassemblyDetector:
             return "Aerodynamic component"
         
         # Check parts
-        part_shapes = " ".join(p.get("shape", "") for p in parts).lower()
+        part_shapes = " ".join((p.get("shape") or "") for p in parts).lower()
         if "wheel" in part_shapes:
             return "Provides mobility"
         elif "plate" in part_shapes or "brick" in part_shapes:
@@ -214,17 +215,20 @@ class SubassemblyDetector:
     
     def _extract_spatial_signature(self, step: Dict[str, Any]) -> str:
         """Extract spatial signature from step."""
+        if not self.enable_spatial_relationships:
+            return "spatial analysis disabled"
+
         spatial = step.get("spatial_relationships", {})
         position = spatial.get("position", "")
         orientation = spatial.get("rotation", "")
-        
+
         if position and orientation:
             return f"{position}, {orientation}"
         elif position:
             return position
         elif orientation:
             return orientation
-        
+
         return "standard arrangement"
     
     def _build_hierarchy(
@@ -248,7 +252,7 @@ class SubassemblyDetector:
                 # Get the step description
                 if later_step - 1 < len(extracted_steps):
                     step_data = extracted_steps[later_step - 1]
-                    existing_assembly = step_data.get("existing_assembly", "").lower()
+                    existing_assembly = (step_data.get("existing_assembly") or "").lower()
                     
                     # Check if this subassembly is mentioned
                     if subasm["name"].lower() in existing_assembly:
@@ -342,8 +346,8 @@ class GraphBuilder:
     """
     Builds hierarchical assembly graph following Manual2Skill's 2-stage approach.
     """
-    
-    def __init__(self, vlm_client=None):
+
+    def __init__(self, vlm_client=None, enable_post_processing=True, enable_spatial_relationships: bool = True, enable_spatial_temporal: bool = True):
         # Use provided VLM client or get from config
         if vlm_client is None:
             from src.vision_processing.vlm_step_extractor import VLMStepExtractor
@@ -356,11 +360,29 @@ class GraphBuilder:
         else:
             self.vlm_client = vlm_client
             logger.info("GraphBuilder initialized with provided VLM client")
-        
+
         self.part_association = PartAssociationModule(vlm_client=self.vlm_client)
-        self.subassembly_detector = SubassemblyDetector(self.vlm_client)
+        self.subassembly_detector = SubassemblyDetector(
+            self.vlm_client,
+            enable_spatial_relationships=enable_spatial_relationships
+        )
         self.state_tracker = StepStateTracker()
+
+        # Control post-processing based on spatial-temporal flag
+        self.enable_post_processing = enable_post_processing and enable_spatial_temporal
+        self.enable_spatial_relationships = enable_spatial_relationships
+
         logger.info("GraphBuilder initialized with 2-stage hierarchical construction")
+
+        if enable_spatial_relationships:
+            logger.info("Spatial relationships: ENABLED")
+        else:
+            logger.warning("⚠ Spatial relationships: DISABLED")
+
+        if self.enable_post_processing:
+            logger.info("Post-processing subassembly analysis: ENABLED")
+        else:
+            logger.warning("⚠ Post-processing (spatial-temporal): DISABLED")
     
     def build_graph(
         self,
@@ -424,7 +446,7 @@ class GraphBuilder:
         
         # Calculate metadata
         metadata = self._calculate_metadata(nodes, subassemblies, extracted_steps)
-        
+
         graph = {
             "manual_id": assembly_id,
             "metadata": metadata,
@@ -433,15 +455,33 @@ class GraphBuilder:
             "step_states": step_states,
             "part_catalog": part_catalog
         }
-        
+
+        # Stage 3: POST-PROCESSING ANALYSIS (NEW)
+        if self.enable_post_processing:
+            logger.info("\n[Stage 3/3] Post-Processing Subassembly Analysis")
+            from .post_processing import PostProcessingSubassemblyAnalyzer
+
+            analyzer = PostProcessingSubassemblyAnalyzer(self.vlm_client)
+            graph = analyzer.analyze_and_augment_graph(
+                graph=graph,
+                extracted_steps=extracted_steps
+            )
+
+            # Update local references after augmentation
+            nodes = graph["nodes"]
+            edges = graph["edges"]
+            metadata = graph["metadata"]
+
         logger.info("\n" + "=" * 60)
         logger.info("✓ Hierarchical Graph Construction Complete")
         logger.info(f"  Parts: {metadata['total_parts']}")
         logger.info(f"  Subassemblies: {metadata['total_subassemblies']}")
+        if metadata.get('discovered_subassemblies'):
+            logger.info(f"  Discovered: {metadata['discovered_subassemblies']} (post-processing)")
         logger.info(f"  Steps: {metadata['total_steps']}")
         logger.info(f"  Max Depth: {metadata['max_depth']} layers")
         logger.info("=" * 60)
-        
+
         return graph
     
     def _build_graph_structure(
@@ -633,13 +673,17 @@ class GraphBuilder:
         total_subassemblies = len([n for n in nodes if n["type"] == "subassembly"])
         total_steps = len([s for s in extracted_steps if s.get("parts_required")])
         max_depth = max([n.get("layer", 0) for n in nodes])
-        
+
         return {
             "total_parts": total_parts,
             "total_subassemblies": total_subassemblies,
             "total_steps": total_steps,
             "max_depth": max_depth,
-            "generated_at": datetime.now().isoformat()
+            "generated_at": datetime.now().isoformat(),
+            "configuration": {
+                "spatial_relationships_enabled": self.enable_spatial_relationships,
+                "spatial_temporal_enabled": self.enable_post_processing
+            }
         }
     
     def save_graph(self, graph: Dict[str, Any], output_path: Path):
@@ -663,6 +707,13 @@ class GraphBuilder:
         lines.append("=" * 80)
         lines.append(f"\nManual ID: {graph['manual_id']}")
         lines.append(f"Generated: {graph['metadata']['generated_at']}")
+
+        # Configuration info
+        config = graph['metadata'].get('configuration', {})
+        lines.append(f"\n⚙️  CONFIGURATION:")
+        lines.append(f"  Spatial Relationships: {'Enabled' if config.get('spatial_relationships_enabled', True) else 'DISABLED'}")
+        lines.append(f"  Spatial-Temporal Patterns: {'Enabled' if config.get('spatial_temporal_enabled', True) else 'DISABLED'}")
+
         lines.append(f"\n📊 STATISTICS:")
         lines.append(f"  Total Parts: {graph['metadata']['total_parts']}")
         lines.append(f"  Total Subassemblies: {graph['metadata']['total_subassemblies']}")

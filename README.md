@@ -223,9 +223,129 @@ uv run python main.py <url> --no-multimodal
 # Start from scratch (ignore checkpoint)
 uv run python main.py <url> --no-resume
 
+# Disable spatial features (see Comparison Testing below)
+uv run python main.py <url> --no-spatial
+
 # View all options
 uv run python main.py --help
 ```
+
+### 3b. Comparison Testing: Spatial Features A/B Testing
+
+**🔬 NEW: Compare manual processing with/without spatial features**
+
+The `--no-spatial` flag disables all spatial processing features:
+- **Spatial Relationships**: VLM-extracted 3D positioning data (position, rotation, alignment)
+- **Spatial-Temporal Patterns**: Post-processing pattern analysis (progressive sequences)
+
+**Use Case**: Ingest the same manual with different configurations to compare:
+- Graph structure complexity
+- Subassembly detection accuracy
+- Query retrieval performance
+- RAG response quality
+- VLM token usage and processing speed
+
+**Step-by-Step Comparison Workflow**:
+
+```bash
+# 1. Full Features (Baseline)
+uv run python main.py manual.pdf \
+  -o output/baseline \
+  --assembly-id manual_baseline
+
+# Configuration in output/baseline/manual_baseline_graph_summary.txt:
+#   Spatial Relationships: Enabled
+#   Spatial-Temporal Patterns: Enabled
+
+# 2. No Spatial Features (Comparison)
+uv run python main.py manual.pdf \
+  -o output/no_spatial \
+  --assembly-id manual_no_spatial \
+  --no-spatial
+
+# VLM extraction skips spatial data (saves ~10-15% tokens)
+# Spatial reasoning uses default positions only
+# Post-processing pattern detection is disabled
+# Fastest processing, simplest graph structure
+```
+
+**🎯 Both Versions Now in Vector Store!**
+
+Each version has a unique `manual_id` and coexists in ChromaDB. You can query them separately:
+
+```bash
+# Start backend
+cd backend
+uvicorn app.main:app --reload --port 8000
+
+# Query each version
+curl -X POST http://localhost:8000/api/query/text \
+  -H "Content-Type: application/json" \
+  -d '{
+    "manual_id": "manual_baseline",
+    "question": "How to attach the wheels?"
+  }'
+
+curl -X POST http://localhost:8000/api/query/text \
+  -H "Content-Type: application/json" \
+  -d '{
+    "manual_id": "manual_no_spatial",
+    "question": "How to attach the wheels?"
+  }'
+```
+
+**📊 Compare Results**:
+
+```bash
+# 1. Compare Graph Structures
+diff output/baseline/manual_baseline_graph_summary.txt \
+     output/no_spatial/manual_no_spatial_graph_summary.txt
+
+# Look for:
+#   - Subassembly count differences
+#   - Pattern detection differences
+#   - Graph depth/complexity
+
+# 2. Compare Graph JSON
+python3 -c "
+import json
+baseline = json.load(open('output/baseline/manual_baseline_graph.json'))
+no_spatial = json.load(open('output/no_spatial/manual_no_spatial_graph.json'))
+
+print('Baseline subassemblies:', baseline['metadata']['total_subassemblies'])
+print('No-spatial subassemblies:', no_spatial['metadata']['total_subassemblies'])
+print('Baseline config:', baseline['metadata']['configuration'])
+print('No-spatial config:', no_spatial['metadata']['configuration'])
+"
+
+# 3. Test Query Performance (via frontend or API)
+# - Load each manual in frontend
+# - Ask identical questions
+# - Compare response accuracy and relevance
+
+# 4. Analyze Processing Time/Cost
+# Check console output for:
+#   - VLM token usage (baseline vs no_spatial)
+#   - Processing duration
+#   - Graph building time
+```
+
+**💡 Expected Differences**:
+
+| Aspect | Baseline (Spatial Enabled) | No Spatial (--no-spatial) |
+|--------|---------------------------|---------------------------|
+| VLM Tokens | 100% | ~85-90% (saves 10-15%) |
+| Spatial Data | Full 3D coordinates | Default positions only |
+| Subassemblies | VLM detection | VLM detection |
+| Patterns Detected | Yes (spatial-temporal) | No |
+| Processing Time | Longer | Faster |
+| Graph Complexity | Higher (with patterns) | Lower (simpler) |
+| Query Accuracy | Best for spatial queries | Better for structural queries |
+
+**🎯 When to Use Each Mode**:
+
+- **Baseline (default)**: Production use, best overall accuracy, spatial reasoning needed
+- **No Spatial (--no-spatial)**: Faster processing, simpler graphs, when manual has poor/unclear spatial info, resource-constrained environments, or for comparison testing
 
 ### 4. Start RAG Backend
 

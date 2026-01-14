@@ -173,8 +173,77 @@ uv run python main.py <url> --no-multimodal
 # Start from scratch (ignore checkpoint)
 uv run python main.py <url> --no-resume
 
+# Disable spatial features for comparison testing
+uv run python main.py <url> --no-spatial
+
 # View all options
 uv run python main.py --help
+```
+
+### Step 3b: Comparison Testing (Optional)
+
+**🔬 Test Impact of Spatial Features**
+
+Compare the same manual with/without all spatial features:
+
+```bash
+# Baseline: Full spatial features (default)
+uv run python main.py manual.pdf \
+  -o output/baseline \
+  --assembly-id manual_baseline
+
+# No spatial features (comparison mode)
+uv run python main.py manual.pdf \
+  -o output/no_spatial \
+  --assembly-id manual_no_spatial \
+  --no-spatial
+
+# The --no-spatial flag disables:
+#   - Spatial relationships extraction (saves ~10-15% VLM tokens)
+#   - Spatial-temporal pattern analysis
+#   - Results in faster processing and simpler graphs
+```
+
+**Both versions get unique IDs and coexist in the vector store!**
+
+**Compare Results**:
+```bash
+# 1. Graph structure comparison
+diff output/baseline/manual_baseline_graph_summary.txt \
+     output/no_spatial/manual_no_spatial_graph_summary.txt
+
+# 2. JSON data comparison
+python3 -c "
+import json
+b = json.load(open('output/baseline/manual_baseline_graph.json'))
+n = json.load(open('output/no_spatial/manual_no_spatial_graph.json'))
+print('Baseline:', b['metadata']['configuration'])
+print('No-spatial:', n['metadata']['configuration'])
+print('Subassemblies:', b['metadata']['total_subassemblies'], 'vs', n['metadata']['total_subassemblies'])
+"
+
+# 3. Query performance (after starting backend)
+curl -X POST http://localhost:8000/api/query/text \
+  -d '{"manual_id": "manual_baseline", "question": "How to attach wheels?"}'
+
+curl -X POST http://localhost:8000/api/query/text \
+  -d '{"manual_id": "manual_no_spatial", "question": "How to attach wheels?"}'
+```
+
+**What to Look For**:
+- **Graph Complexity**: Baseline should have more detailed subassemblies
+- **Processing Speed**: No-spatial versions process ~10-15% faster
+- **Query Accuracy**: Compare RAG responses for spatial vs. structural questions
+- **Token Usage**: Check console logs for VLM token consumption
+
+**Configuration Tracking**:
+
+Every graph file tracks which features were enabled:
+```
+output/*/manual_*_graph_summary.txt:
+  ⚙️  CONFIGURATION:
+    Spatial Relationships: Enabled / DISABLED
+    Spatial-Temporal Patterns: Enabled / DISABLED
 ```
 
 ### Step 4: Start Backend (Terminal 1)
@@ -374,6 +443,47 @@ curl http://localhost:8000/health
 cat frontend/.env.local
 ```
 
+### Comparison Testing Issues
+
+**Problem**: Different versions overwrite each other in vector store
+```bash
+# Make sure you use unique --assembly-id for each version!
+# Correct:
+uv run python main.py manual.pdf --assembly-id baseline
+uv run python main.py manual.pdf --assembly-id no_spatial --no-spatial
+
+# Wrong (will overwrite):
+uv run python main.py manual.pdf  # Uses filename as ID
+uv run python main.py manual.pdf --no-spatial  # Same ID, overwrites!
+```
+
+**Problem**: Can't see configuration differences in output
+```bash
+# Check graph summary file
+cat output/baseline/baseline_graph_summary.txt | grep "CONFIGURATION" -A 2
+
+# Or check JSON metadata
+python3 -c "
+import json
+g = json.load(open('output/baseline/baseline_graph.json'))
+print(g['metadata']['configuration'])
+"
+```
+
+**Problem**: Query returns wrong manual version
+```bash
+# Make sure you specify correct manual_id in API call
+curl -X POST http://localhost:8000/api/query/text \
+  -H "Content-Type: application/json" \
+  -d '{
+    "manual_id": "baseline",  # Must match --assembly-id
+    "question": "your question"
+  }'
+
+# List all available manuals
+curl http://localhost:8000/api/manuals
+```
+
 ---
 
 ## 📚 Next Steps
@@ -386,12 +496,25 @@ cat frontend/.env.local
    - Ask structural questions: "What subassembly contains the red brick?"
    - Test inter-step references: "What was built in previous steps?"
 
-3. **Review Documentation**:
+3. **Run Spatial Features Comparison** (Recommended for Research):
+   ```bash
+   # Process the same manual 2 ways
+   uv run python main.py manual.pdf -o output/baseline --assembly-id baseline
+   uv run python main.py manual.pdf -o output/no_spatial --assembly-id no_spatial --no-spatial
+
+   # Compare graph outputs
+   diff output/baseline/baseline_graph_summary.txt output/no_spatial/no_spatial_graph_summary.txt
+
+   # Test query performance differences (after starting backend)
+   # Use frontend to select different manuals and compare RAG responses
+   ```
+
+4. **Review Documentation**:
    - [IMPLEMENTATION_SUMMARY.md](IMPLEMENTATION_SUMMARY.md) - Phase 0 & 1 details
-   - [README.md](README.md) - Full system overview
+   - [README.md](README.md) - Full system overview (includes comparison testing guide)
    - [implementation_plan.md](implementation_plan.md) - Original design spec
 
-4. **Run Tests**:
+5. **Run Tests**:
    ```bash
    # Test build memory
    pytest tests/test_build_memory.py -v

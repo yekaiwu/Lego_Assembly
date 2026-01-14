@@ -4,7 +4,9 @@ Configuration management for LEGO RAG Backend.
 
 from pathlib import Path
 from pydantic_settings import BaseSettings
+from pydantic import model_validator
 from typing import Optional
+import os
 
 
 class Settings(BaseSettings):
@@ -36,21 +38,53 @@ class Settings(BaseSettings):
     #   DeepSeek: "deepseek/deepseek-chat"
     rag_llm_model: str = "gemini/gemini-2.5-flash"  # For text generation
     rag_embedding_model: str = "gemini/text-embedding-004"  # For embeddings
-    
+
     # Server
     api_host: str = "0.0.0.0"
     api_port: int = 8000
     log_level: str = "INFO"
-    
-    # Data Paths
-    output_dir: Path = Path("../output")
-    temp_pages_dir: Path = Path("../output/temp_pages")
+
+    # Data Paths (configurable via environment variables)
+    output_dir: Path = Path("./output")  # Changed from ../output to ./output for project root execution
+    temp_pages_dir: Path = Path("./output/temp_pages")
+
+    @model_validator(mode='after')
+    def resolve_paths(self):
+        """
+        Resolve output paths to handle both backend/ and project root execution contexts.
+
+        If output_dir from .env is '../output' (for backend/ context) but we're running
+        from project root, adjust to './output' instead.
+        """
+        # Convert to Path if string
+        if isinstance(self.output_dir, str):
+            self.output_dir = Path(self.output_dir)
+        if isinstance(self.temp_pages_dir, str):
+            self.temp_pages_dir = Path(self.temp_pages_dir)
+
+        # Resolve the path relative to current working directory
+        resolved_output = self.output_dir.resolve()
+
+        # If the resolved path doesn't exist, try alternative locations
+        if not resolved_output.exists():
+            # Try ./output relative to cwd (project root execution)
+            alternative = Path.cwd() / "output"
+            if alternative.exists():
+                self.output_dir = Path("./output")
+                self.temp_pages_dir = Path("./output/temp_pages")
+                print(f"INFO: Adjusted output_dir from {resolved_output} to {alternative}")
+
+        return self
     
     # RAG Settings
     top_k_results: int = 5
     similarity_threshold: float = 0.2  # Used as minimum threshold for hybrid search
     max_context_length: int = 4000
-    
+
+    # Processing Features
+    enable_spatial_relationships: bool = True
+    enable_spatial_temporal_patterns: bool = True
+
     class Config:
         # Look for .env in current directory, then parent directory
         env_file = [".env", "../.env"]

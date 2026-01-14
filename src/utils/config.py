@@ -64,18 +64,28 @@ class PathConfig(BaseModel):
     base_dir: Path = Field(default_factory=lambda: Path(__file__).parent.parent.parent)
     cache_dir: Path = Field(default_factory=lambda: Path(os.getenv("CACHE_DIR", "./cache")))
     parts_db_path: Path = Field(default_factory=lambda: Path(os.getenv("PARTS_DB_PATH", "./data/parts_database.db")))
-    
+
     def __init__(self, **data):
         super().__init__(**data)
         # Ensure directories exist
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.parts_db_path.parent.mkdir(parents=True, exist_ok=True)
 
+class ProcessingConfig(BaseModel):
+    """Processing feature configuration."""
+    enable_spatial_relationships: bool = Field(
+        default_factory=lambda: os.getenv("ENABLE_SPATIAL_RELATIONSHIPS", "true").lower() == "true"
+    )
+    enable_spatial_temporal_patterns: bool = Field(
+        default_factory=lambda: os.getenv("ENABLE_SPATIAL_TEMPORAL_PATTERNS", "true").lower() == "true"
+    )
+
 class SystemConfig(BaseModel):
     """Overall system configuration."""
     api: APIConfig = Field(default_factory=APIConfig)
     models: ModelConfig = Field(default_factory=ModelConfig)
     paths: PathConfig = Field(default_factory=PathConfig)
+    processing: ProcessingConfig = Field(default_factory=ProcessingConfig)
     cache_enabled: bool = Field(default_factory=lambda: os.getenv("CACHE_ENABLED", "true").lower() == "true")  # Enabled by default to prevent data loss
 
 # Global config instance

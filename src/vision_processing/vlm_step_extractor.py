@@ -15,7 +15,7 @@ from .token_budget import TokenBudgetManager
 class VLMStepExtractor:
     """Extracts structured step information using VLMs with fallback support."""
 
-    def __init__(self):
+    def __init__(self, enable_spatial_relationships: bool = True):
         config = get_config()
         self.ingestion_vlm = config.models.ingestion_vlm
         self.ingestion_secondary_vlm = config.models.ingestion_secondary_vlm
@@ -23,11 +23,14 @@ class VLMStepExtractor:
         self.cache = get_cache()  # Initialize cache for step processing
         self.build_memory: Optional[BuildMemory] = None  # Context-aware memory
         self.token_budget: Optional[TokenBudgetManager] = None  # Token management
+        self.enable_spatial_relationships = enable_spatial_relationships  # Spatial relationship extraction
 
         # Cache for unified VLM clients (created on-demand)
         self._client_cache = {}
 
         logger.info(f"VLM Step Extractor initialized with ingestion VLM: {self.ingestion_vlm}")
+        if not enable_spatial_relationships:
+            logger.warning("⚠ Spatial relationships disabled - spatial reasoning unavailable")
 
     def _get_client(self, vlm_name: str) -> UnifiedVLMClient:
         """
@@ -239,6 +242,16 @@ BUILD CONTEXT:
 {context['sliding_window']}
 """)
 
+        # Build schema parts conditionally
+        spatial_schema = ""
+        if self.enable_spatial_relationships:
+            spatial_schema = """    "spatial_relationships": {{
+      "position": "top|bottom|left|right|front|back|center",
+      "rotation": "rotation description if any",
+      "alignment": "alignment instructions"
+    }},
+"""
+
         # Main extraction instructions
         prompt_parts.append(f"""
 CURRENT TASK:
@@ -270,12 +283,7 @@ IMPORTANT: This page may contain ONE or MORE assembly steps. Analyze carefully a
         "orientation": "directional cues"
       }}
     ],
-    "spatial_relationships": {{
-      "position": "top|bottom|left|right|front|back|center",
-      "rotation": "rotation description if any",
-      "alignment": "alignment instructions"
-    }},
-    "dependencies": "which previous steps are prerequisites",
+{spatial_schema}    "dependencies": "which previous steps are prerequisites",
     "notes": "any special instructions or warnings",
 
     "subassembly_hint": {{

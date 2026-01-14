@@ -414,37 +414,137 @@ class GraphManager:
             if node.get("type") == node_type
         ]
     
+    def get_discovered_subassemblies(
+        self,
+        manual_id: str
+    ) -> List[Dict[str, Any]]:
+        """
+        Get all subassemblies discovered by post-processing analysis.
+
+        Args:
+            manual_id: Manual identifier
+
+        Returns:
+            List of discovered subassembly nodes
+        """
+        graph = self.load_graph(manual_id)
+        if not graph:
+            return []
+
+        discovered = [
+            node for node in graph.get("nodes", [])
+            if node.get("type") == "subassembly" and
+               node.get("discovery_method") is not None
+        ]
+
+        logger.debug(f"Found {len(discovered)} discovered subassemblies for {manual_id}")
+        return discovered
+
+    def get_original_subassemblies(
+        self,
+        manual_id: str
+    ) -> List[Dict[str, Any]]:
+        """
+        Get all subassemblies from original VLM-based detection.
+
+        Args:
+            manual_id: Manual identifier
+
+        Returns:
+            List of original subassembly nodes
+        """
+        graph = self.load_graph(manual_id)
+        if not graph:
+            return []
+
+        original = [
+            node for node in graph.get("nodes", [])
+            if node.get("type") == "subassembly" and
+               node.get("discovery_method") is None
+        ]
+
+        logger.debug(f"Found {len(original)} original subassemblies for {manual_id}")
+        return original
+
+    def get_subassemblies_by_method(
+        self,
+        manual_id: str,
+        discovery_method: str
+    ) -> List[Dict[str, Any]]:
+        """
+        Get subassemblies discovered by a specific method.
+
+        Args:
+            manual_id: Manual identifier
+            discovery_method: Method name (e.g., 'part_similarity',
+                            'dependency_analysis', 'spatial_temporal')
+
+        Returns:
+            List of subassembly nodes discovered by the method
+        """
+        graph = self.load_graph(manual_id)
+        if not graph:
+            return []
+
+        filtered = [
+            node for node in graph.get("nodes", [])
+            if node.get("type") == "subassembly" and
+               node.get("discovery_method") == discovery_method
+        ]
+
+        logger.debug(
+            f"Found {len(filtered)} subassemblies for {manual_id} "
+            f"using method '{discovery_method}'"
+        )
+        return filtered
+
     def get_graph_summary(
         self,
         manual_id: str
     ) -> Dict[str, Any]:
         """
         Get summary statistics for a graph.
-        
+
         Args:
             manual_id: Manual identifier
-        
+
         Returns:
             Summary dictionary
         """
         graph = self.load_graph(manual_id)
         if not graph:
             return {}
-        
+
         metadata = graph.get("metadata", {})
         nodes = graph.get("nodes", [])
         edges = graph.get("edges", [])
-        
+
+        # Count discovered vs original subassemblies
+        subassemblies = [n for n in nodes if n.get("type") == "subassembly"]
+        discovered = [s for s in subassemblies if s.get("discovery_method")]
+        original = [s for s in subassemblies if not s.get("discovery_method")]
+
+        # Count by discovery method
+        discovery_methods = {}
+        for subasm in discovered:
+            method = subasm.get("discovery_method")
+            if method:
+                discovery_methods[method] = discovery_methods.get(method, 0) + 1
+
         return {
             "manual_id": manual_id,
             "total_nodes": len(nodes),
             "total_edges": len(edges),
             "total_parts": metadata.get("total_parts", 0),
             "total_subassemblies": metadata.get("total_subassemblies", 0),
+            "original_subassemblies": len(original),
+            "discovered_subassemblies": metadata.get("discovered_subassemblies", 0),
+            "discovery_methods": discovery_methods,
             "total_steps": metadata.get("total_steps", 0),
+            "max_depth": metadata.get("max_depth", 0),
             "node_types": {
                 "parts": len([n for n in nodes if n.get("type") == "part"]),
-                "subassemblies": len([n for n in nodes if n.get("type") == "subassembly"]),
+                "subassemblies": len(subassemblies),
                 "model": len([n for n in nodes if n.get("type") == "model"])
             }
         }
