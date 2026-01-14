@@ -12,8 +12,8 @@ from loguru import logger
 
 class ManualDataProcessor:
     """Processes LEGO manual data for ingestion into vector store."""
-    
-    def __init__(self, output_dir: Path, use_multimodal: bool = True, diagram_vlm: str = None):
+
+    def __init__(self, output_dir: Path, use_multimodal: bool = True, diagram_vlm: str = None, enable_spatial_relationships: bool = True):
         """
         Initialize data processor.
 
@@ -21,9 +21,11 @@ class ManualDataProcessor:
             output_dir: Path to output directory containing manual data
             use_multimodal: Whether to use multimodal processing (default: True)
             diagram_vlm: Optional VLM model name for diagram descriptions
+            enable_spatial_relationships: Whether to include spatial relationships in chunks (default: True)
         """
         self.output_dir = Path(output_dir)
         self.use_multimodal = use_multimodal
+        self.enable_spatial_relationships = enable_spatial_relationships
 
         # Import multimodal processor if needed
         if use_multimodal:
@@ -156,15 +158,16 @@ class ManualDataProcessor:
                 if action_texts:
                     content_parts.append(f"Actions: {'; '.join(action_texts)}")
             
-            # Add spatial relationships
-            spatial = extracted_step.get('spatial_relationships', {})
-            if spatial and isinstance(spatial, dict):
-                spatial_text = []
-                for key, value in spatial.items():
-                    if value and value != "unclear":
-                        spatial_text.append(f"{key}: {value}")
-                if spatial_text:
-                    content_parts.append(f"Spatial info: {', '.join(spatial_text)}")
+            # Add spatial relationships (conditionally)
+            if self.enable_spatial_relationships:
+                spatial = extracted_step.get('spatial_relationships', {})
+                if spatial and isinstance(spatial, dict):
+                    spatial_text = []
+                    for key, value in spatial.items():
+                        if value and value != "unclear":
+                            spatial_text.append(f"{key}: {value}")
+                    if spatial_text:
+                        content_parts.append(f"Spatial info: {', '.join(spatial_text)}")
             
             # Add dependencies (handle None and string values)
             dependencies = dep_info.get('dependencies', [])

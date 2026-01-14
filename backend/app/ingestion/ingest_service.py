@@ -17,18 +17,20 @@ from ..config import get_settings
 class IngestionService:
     """Service for ingesting LEGO manuals into vector store."""
 
-    def __init__(self, use_multimodal: bool = True):
+    def __init__(self, use_multimodal: bool = True, enable_spatial_relationships: bool = True):
         """
         Initialize ingestion service.
 
         Args:
             use_multimodal: Whether to use multimodal processing (default: True)
+            enable_spatial_relationships: Whether to include spatial relationships in chunks (default: True)
         """
         self.settings = get_settings()
         self.processor = ManualDataProcessor(
             self.settings.output_dir,
             use_multimodal=use_multimodal,
-            diagram_vlm=self.settings.diagram_vlm
+            diagram_vlm=self.settings.diagram_vlm,
+            enable_spatial_relationships=enable_spatial_relationships
         )
         self.chroma = get_chroma_manager()
 

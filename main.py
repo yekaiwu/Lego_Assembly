@@ -84,7 +84,9 @@ def main(
     display_output: bool = True,
     skip_ingestion: bool = False,
     use_multimodal: bool = True,
-    resume: bool = True
+    resume: bool = True,
+    enable_spatial_relationships: bool = True,
+    enable_spatial_temporal: bool = True
 ):
     """
     Main workflow: Process LEGO manual, generate plan, and ingest into vector store.
@@ -99,6 +101,8 @@ def main(
         skip_ingestion: Skip Phase 2 (vector store ingestion)
         use_multimodal: Use multimodal embeddings in ingestion
         resume: Resume from checkpoint if available
+        enable_spatial_relationships: Enable spatial relationship extraction and processing
+        enable_spatial_temporal: Enable spatial-temporal pattern analysis
     """
     logger.info("=" * 80)
     logger.info("LEGO Assembly System - Complete Workflow")
@@ -131,7 +135,11 @@ def main(
     logger.info(f"Output: {output_dir}")
     logger.info(f"Assembly ID: {assembly_id}")
     logger.info("")
-    
+    logger.info("Configuration:")
+    logger.info(f"  Spatial Relationships: {'Enabled' if enable_spatial_relationships else 'DISABLED'}")
+    logger.info(f"  Spatial-Temporal Patterns: {'Enabled' if enable_spatial_temporal else 'DISABLED'}")
+    logger.info("")
+
     # Initialize checkpoint manager
     checkpoint = ProcessingCheckpoint(output_dir, assembly_id)
     
@@ -205,7 +213,7 @@ def main(
     # Step 3 (ENHANCED): Phase 1 - Context-Aware Step Extraction
     if not checkpoint.is_step_complete("step_extraction"):
         logger.info("Step 3/7: Extracting step information using VLM (Phase 1 - Context-Aware)...")
-        vlm_extractor = VLMStepExtractor()
+        vlm_extractor = VLMStepExtractor(enable_spatial_relationships=enable_spatial_relationships)
 
         # NEW: Initialize context-aware memory
         vlm_extractor.initialize_memory(
@@ -362,7 +370,11 @@ def main(
     # Step 5: Hierarchical Assembly Graph Construction (Phase 2 - Already Implemented)
     if not checkpoint.is_step_complete("hierarchical_graph"):
         logger.info("Step 5/7: Building hierarchical assembly graph (Phase 2)...")
-        graph_builder = GraphBuilder()
+        graph_builder = GraphBuilder(
+            enable_post_processing=enable_spatial_temporal,  # Controls spatial-temporal
+            enable_spatial_relationships=enable_spatial_relationships,
+            enable_spatial_temporal=enable_spatial_temporal
+        )
 
         hierarchical_graph = graph_builder.build_graph(
             extracted_steps=extracted_steps,
@@ -442,7 +454,10 @@ def main(
         logger.info("  (This creates searchable embeddings with multimodal fusion)")
         
         try:
-            ingestion_service = IngestionService(use_multimodal=use_multimodal)
+            ingestion_service = IngestionService(
+                use_multimodal=use_multimodal,
+                enable_spatial_relationships=enable_spatial_relationships
+            )
             result = ingestion_service.ingest_manual(assembly_id)
             
             if result['status'] == 'success':
@@ -539,6 +554,12 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
+        "--no-spatial",
+        action="store_true",
+        help="Disable all spatial features (relationships + temporal patterns) for comparison testing"
+    )
+
+    parser.add_argument(
         "--log-level",
         type=str,
         default="INFO",
@@ -606,7 +627,9 @@ if __name__ == "__main__":
             display_output=not args.no_display,
             skip_ingestion=args.skip_ingestion,
             use_multimodal=not args.no_multimodal,
-            resume=not args.no_resume
+            resume=not args.no_resume,
+            enable_spatial_relationships=not args.no_spatial,
+            enable_spatial_temporal=not args.no_spatial
         )
     except Exception as e:
         logger.exception(f"Error during execution: {e}")

@@ -20,8 +20,9 @@ from .part_association import PartAssociationModule, PartCatalog
 class SubassemblyDetector:
     """Detects subassemblies using VLM-guided heuristics."""
 
-    def __init__(self, vlm_client: UnifiedVLMClient):
+    def __init__(self, vlm_client: UnifiedVLMClient, enable_spatial_relationships: bool = True):
         self.vlm_client = vlm_client
+        self.enable_spatial_relationships = enable_spatial_relationships
     
     def detect_subassemblies(
         self,
@@ -214,17 +215,20 @@ class SubassemblyDetector:
     
     def _extract_spatial_signature(self, step: Dict[str, Any]) -> str:
         """Extract spatial signature from step."""
+        if not self.enable_spatial_relationships:
+            return "spatial analysis disabled"
+
         spatial = step.get("spatial_relationships", {})
         position = spatial.get("position", "")
         orientation = spatial.get("rotation", "")
-        
+
         if position and orientation:
             return f"{position}, {orientation}"
         elif position:
             return position
         elif orientation:
             return orientation
-        
+
         return "standard arrangement"
     
     def _build_hierarchy(
@@ -343,7 +347,7 @@ class GraphBuilder:
     Builds hierarchical assembly graph following Manual2Skill's 2-stage approach.
     """
 
-    def __init__(self, vlm_client=None, enable_post_processing=True):
+    def __init__(self, vlm_client=None, enable_post_processing=True, enable_spatial_relationships: bool = True, enable_spatial_temporal: bool = True):
         # Use provided VLM client or get from config
         if vlm_client is None:
             from src.vision_processing.vlm_step_extractor import VLMStepExtractor
@@ -358,13 +362,27 @@ class GraphBuilder:
             logger.info("GraphBuilder initialized with provided VLM client")
 
         self.part_association = PartAssociationModule(vlm_client=self.vlm_client)
-        self.subassembly_detector = SubassemblyDetector(self.vlm_client)
+        self.subassembly_detector = SubassemblyDetector(
+            self.vlm_client,
+            enable_spatial_relationships=enable_spatial_relationships
+        )
         self.state_tracker = StepStateTracker()
-        self.enable_post_processing = enable_post_processing
+
+        # Control post-processing based on spatial-temporal flag
+        self.enable_post_processing = enable_post_processing and enable_spatial_temporal
+        self.enable_spatial_relationships = enable_spatial_relationships
+
         logger.info("GraphBuilder initialized with 2-stage hierarchical construction")
+
+        if enable_spatial_relationships:
+            logger.info("Spatial relationships: ENABLED")
+        else:
+            logger.warning("⚠ Spatial relationships: DISABLED")
 
         if self.enable_post_processing:
             logger.info("Post-processing subassembly analysis: ENABLED")
+        else:
+            logger.warning("⚠ Post-processing (spatial-temporal): DISABLED")
     
     def build_graph(
         self,
@@ -655,13 +673,17 @@ class GraphBuilder:
         total_subassemblies = len([n for n in nodes if n["type"] == "subassembly"])
         total_steps = len([s for s in extracted_steps if s.get("parts_required")])
         max_depth = max([n.get("layer", 0) for n in nodes])
-        
+
         return {
             "total_parts": total_parts,
             "total_subassemblies": total_subassemblies,
             "total_steps": total_steps,
             "max_depth": max_depth,
-            "generated_at": datetime.now().isoformat()
+            "generated_at": datetime.now().isoformat(),
+            "configuration": {
+                "spatial_relationships_enabled": self.enable_spatial_relationships,
+                "spatial_temporal_enabled": self.enable_post_processing
+            }
         }
     
     def save_graph(self, graph: Dict[str, Any], output_path: Path):
@@ -685,6 +707,13 @@ class GraphBuilder:
         lines.append("=" * 80)
         lines.append(f"\nManual ID: {graph['manual_id']}")
         lines.append(f"Generated: {graph['metadata']['generated_at']}")
+
+        # Configuration info
+        config = graph['metadata'].get('configuration', {})
+        lines.append(f"\n⚙️  CONFIGURATION:")
+        lines.append(f"  Spatial Relationships: {'Enabled' if config.get('spatial_relationships_enabled', True) else 'DISABLED'}")
+        lines.append(f"  Spatial-Temporal Patterns: {'Enabled' if config.get('spatial_temporal_enabled', True) else 'DISABLED'}")
+
         lines.append(f"\n📊 STATISTICS:")
         lines.append(f"  Total Parts: {graph['metadata']['total_parts']}")
         lines.append(f"  Total Subassemblies: {graph['metadata']['total_subassemblies']}")

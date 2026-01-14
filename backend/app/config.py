@@ -50,7 +50,11 @@ class Settings(BaseSettings):
     top_k_results: int = 5
     similarity_threshold: float = 0.2  # Used as minimum threshold for hybrid search
     max_context_length: int = 4000
-    
+
+    # Processing Features
+    enable_spatial_relationships: bool = True
+    enable_spatial_temporal_patterns: bool = True
+
     class Config:
         # Look for .env in current directory, then parent directory
         env_file = [".env", "../.env"]
