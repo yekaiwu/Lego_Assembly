@@ -276,7 +276,7 @@ class SpatialTemporalPatternMiner:
             step_idx = step_num - 1
             if 0 <= step_idx < len(extracted_steps):
                 step = extracted_steps[step_idx]
-                notes = step.get("notes", "").lower()
+                notes = (step.get("notes") or "").lower()
 
                 # Look for functional components
                 if "wall" in notes:

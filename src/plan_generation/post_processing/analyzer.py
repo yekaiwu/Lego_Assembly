@@ -200,7 +200,7 @@ class PostProcessingSubassemblyAnalyzer:
     def _validate_patterns(
         self,
         patterns: List[Dict[str, Any]],
-        graph: Dict[str, Any]]
+        graph: Dict[str, Any]
     ) -> List[Dict[str, Any]]:
         """
         Validate and filter discovered patterns.

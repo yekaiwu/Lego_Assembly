@@ -45,15 +45,18 @@ class SpatialReasoning:
     ) -> Dict[str, float]:
         """
         Calculate 3D position for a part based on spatial relationships.
-        
+
         Args:
             target_info: Information about part to place
             reference_parts: Already-placed parts for reference
             spatial_relationship: Spatial relationship description from VLM
-        
+
         Returns:
             Dictionary with x, y, z coordinates in studs
         """
+        # Handle None or empty spatial_relationship
+        if not spatial_relationship:
+            spatial_relationship = {}
         position_desc = (spatial_relationship.get("position") or "").lower()
         
         # If no reference parts, place at origin
@@ -111,14 +114,17 @@ class SpatialReasoning:
     ) -> Dict[str, float]:
         """
         Calculate rotation angles for a part.
-        
+
         Args:
             target_info: Part information
             spatial_relationship: Spatial relationship with rotation info
-        
+
         Returns:
             Dictionary with x, y, z rotation angles in degrees
         """
+        # Handle None or empty spatial_relationship
+        if not spatial_relationship:
+            spatial_relationship = {}
         rotation_desc = (spatial_relationship.get("rotation") or "").lower()
         
         # Default: no rotation

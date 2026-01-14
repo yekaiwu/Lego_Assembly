@@ -169,7 +169,7 @@ class DependencyAnalyzer:
             # Check for explicit dependencies in actions
             actions = step.get("actions", [])
             for action in actions:
-                destination = action.get("destination", "").lower()
+                destination = (action.get("destination") or "").lower()
 
                 # If attaching to existing structure
                 if any(kw in destination for kw in ["existing", "previous", "base", "main"]):

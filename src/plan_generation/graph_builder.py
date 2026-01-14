@@ -100,7 +100,7 @@ class SubassemblyDetector:
         notes = (step.get("notes") or "").lower()  # Handle None explicitly
         
         has_functional_parts = any(
-            any(kw in part.get("shape", "").lower() or kw in part.get("description", "").lower() 
+            any(kw in (part.get("shape") or "").lower() or kw in (part.get("description") or "").lower()
                 for kw in functional_keywords)
             for part in parts
         )
@@ -158,7 +158,7 @@ class SubassemblyDetector:
         # Look for key functional parts
         functional_parts = []
         for part in parts:
-            shape = part.get("shape", "").lower()
+            shape = (part.get("shape") or "").lower()
             if any(kw in shape for kw in ["wheel", "wing", "door", "window", "roof", "base"]):
                 functional_parts.append(shape)
         
@@ -192,7 +192,7 @@ class SubassemblyDetector:
             return "Aerodynamic component"
         
         # Check parts
-        part_shapes = " ".join(p.get("shape", "") for p in parts).lower()
+        part_shapes = " ".join((p.get("shape") or "") for p in parts).lower()
         if "wheel" in part_shapes:
             return "Provides mobility"
         elif "plate" in part_shapes or "brick" in part_shapes:
@@ -252,7 +252,7 @@ class SubassemblyDetector:
                 # Get the step description
                 if later_step - 1 < len(extracted_steps):
                     step_data = extracted_steps[later_step - 1]
-                    existing_assembly = step_data.get("existing_assembly", "").lower()
+                    existing_assembly = (step_data.get("existing_assembly") or "").lower()
                     
                     # Check if this subassembly is mentioned
                     if subasm["name"].lower() in existing_assembly:
