@@ -655,8 +655,7 @@ class GraphBuilder:
             "max_depth": max_depth,
             "generated_at": datetime.now().isoformat(),
             "configuration": {
-                "spatial_relationships_enabled": self.enable_spatial_relationships,
-                "spatial_temporal_enabled": self.enable_post_processing
+                "spatial_relationships_enabled": self.enable_spatial_relationships
             }
         }
     

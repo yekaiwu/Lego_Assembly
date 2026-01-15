@@ -83,7 +83,6 @@ class Settings(BaseSettings):
 
     # Processing Features
     enable_spatial_relationships: bool = True
-    enable_spatial_temporal_patterns: bool = True
 
     class Config:
         # Look for .env in current directory, then parent directory
