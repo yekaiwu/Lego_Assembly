@@ -1050,29 +1050,29 @@ async def get_assembly_progress(
 ):
     """
     Calculate assembly progress from current state.
-    
+
     If session_id provided, analyzes uploaded images to determine progress.
     Otherwise returns overall manual statistics.
-    
+
     Returns:
-        - Progress percentage
-        - Completed subassemblies
-        - Remaining subassemblies
-        - Next major component
+        - Progress percentage (based on step completion)
+        - Current step number
+        - Total steps
+        - Completed steps list
     """
     try:
         graph = graph_manager.load_graph(manual_id)
-        
+
         if not graph:
             raise HTTPException(
                 status_code=404,
                 detail=f"Graph not found for manual {manual_id}"
             )
-        
+
         metadata = graph.get('metadata', {})
         total_steps = metadata.get('total_steps', 0)
-        
-        # If session_id provided, detect subassemblies from images
+
+        # If session_id provided, analyze images to get current step
         if session_id:
             upload_dir = Path(f"/tmp/lego_assembly_uploads/{session_id}")
             if not upload_dir.exists():
@@ -1080,71 +1080,47 @@ async def get_assembly_progress(
                     status_code=404,
                     detail="Session not found"
                 )
-            
+
             image_paths = sorted([str(p) for p in upload_dir.glob("image_*.*")])
-            
+
             if image_paths:
-                # Detect subassemblies
+                # Analyze images to get detected parts
                 state_analyzer = get_state_analyzer()
-                subasm_detection = state_analyzer.detect_subassemblies(
+                detected_state = state_analyzer.analyze_assembly_state(
                     image_paths=image_paths,
                     manual_id=manual_id
                 )
-                
-                estimated_step = subasm_detection.get('estimated_step')
-                
-                if estimated_step:
-                    step_state = graph_manager.get_step_state(manual_id, estimated_step)
-                    
-                    if step_state:
-                        final_state = step_state.get('final_state', {})
-                        progress = final_state.get('completion_percentage', 0.0)
-                        
-                        # Get completed and remaining subassemblies
-                        all_subassemblies = graph_manager.get_nodes_by_type(manual_id, "subassembly")
-                        
-                        completed = []
-                        remaining = []
-                        
-                        for subasm in all_subassemblies:
-                            if subasm.get('step_created', 999) <= estimated_step:
-                                completed.append({
-                                    "name": subasm['name'],
-                                    "completed_at_step": subasm.get('step_created', 0)
-                                })
-                            else:
-                                remaining.append({
-                                    "name": subasm['name'],
-                                    "starts_at_step": subasm.get('step_created', 0)
-                                })
-                        
-                        return {
-                            "manual_id": manual_id,
-                            "progress_percentage": progress,
-                            "estimated_step": estimated_step,
-                            "total_steps": total_steps,
-                            "completed_subassemblies": completed,
-                            "remaining_subassemblies": remaining,
-                            "confidence": subasm_detection.get('step_confidence', 0.0)
-                        }
-        
-        # Default: return overall statistics
-        all_subassemblies = graph_manager.get_nodes_by_type(manual_id, "subassembly")
-        
+
+                # Compare with plan to get current step
+                state_comparator = get_state_comparator()
+                comparison = state_comparator.compare_with_plan(
+                    detected_state=detected_state,
+                    manual_id=manual_id
+                )
+
+                # Calculate progress from step number
+                current_step = comparison.get('current_step', 1)
+                completed_steps = comparison.get('completed_steps', [])
+                progress = (current_step / total_steps) * 100 if total_steps > 0 else 0.0
+
+                return {
+                    "manual_id": manual_id,
+                    "progress_percentage": round(progress, 1),
+                    "current_step": current_step,
+                    "total_steps": total_steps,
+                    "completed_steps": completed_steps
+                }
+
+        # Default: return overall statistics (no progress calculated)
         return {
             "manual_id": manual_id,
             "total_steps": total_steps,
-            "total_subassemblies": len(all_subassemblies) if all_subassemblies else 0,
             "total_parts": metadata.get('total_parts', 0),
-            "subassemblies": [
-                {
-                    "name": s['name'],
-                    "created_at_step": s.get('step_created', 0)
-                }
-                for s in (all_subassemblies or [])
-            ]
+            "progress_percentage": 0.0,
+            "current_step": 0,
+            "completed_steps": []
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:

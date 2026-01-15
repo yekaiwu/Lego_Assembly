@@ -85,8 +85,7 @@ def main(
     skip_ingestion: bool = False,
     use_multimodal: bool = True,
     resume: bool = True,
-    enable_spatial_relationships: bool = True,
-    enable_spatial_temporal: bool = True
+    enable_spatial_relationships: bool = True
 ):
     """
     Main workflow: Process LEGO manual, generate plan, and ingest into vector store.
@@ -102,7 +101,6 @@ def main(
         use_multimodal: Use multimodal embeddings in ingestion
         resume: Resume from checkpoint if available
         enable_spatial_relationships: Enable spatial relationship extraction and processing
-        enable_spatial_temporal: Enable spatial-temporal pattern analysis
     """
     logger.info("=" * 80)
     logger.info("LEGO Assembly System - Complete Workflow")
@@ -137,7 +135,6 @@ def main(
     logger.info("")
     logger.info("Configuration:")
     logger.info(f"  Spatial Relationships: {'Enabled' if enable_spatial_relationships else 'DISABLED'}")
-    logger.info(f"  Spatial-Temporal Patterns: {'Enabled' if enable_spatial_temporal else 'DISABLED'}")
     logger.info("")
 
     # Initialize checkpoint manager
@@ -371,9 +368,7 @@ def main(
     if not checkpoint.is_step_complete("hierarchical_graph"):
         logger.info("Step 5/7: Building hierarchical assembly graph (Phase 2)...")
         graph_builder = GraphBuilder(
-            enable_post_processing=enable_spatial_temporal,  # Controls spatial-temporal
-            enable_spatial_relationships=enable_spatial_relationships,
-            enable_spatial_temporal=enable_spatial_temporal
+            enable_spatial_relationships=enable_spatial_relationships
         )
 
         hierarchical_graph = graph_builder.build_graph(
@@ -554,12 +549,6 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "--no-spatial",
-        action="store_true",
-        help="Disable all spatial features (relationships + temporal patterns) for comparison testing"
-    )
-
-    parser.add_argument(
         "--log-level",
         type=str,
         default="INFO",
@@ -628,8 +617,7 @@ if __name__ == "__main__":
             skip_ingestion=args.skip_ingestion,
             use_multimodal=not args.no_multimodal,
             resume=not args.no_resume,
-            enable_spatial_relationships=not args.no_spatial,
-            enable_spatial_temporal=not args.no_spatial
+            enable_spatial_relationships=True
         )
     except Exception as e:
         logger.exception(f"Error during execution: {e}")

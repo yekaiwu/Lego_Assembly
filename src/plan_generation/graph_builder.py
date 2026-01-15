@@ -347,7 +347,7 @@ class GraphBuilder:
     Builds hierarchical assembly graph following Manual2Skill's 2-stage approach.
     """
 
-    def __init__(self, vlm_client=None, enable_post_processing=True, enable_spatial_relationships: bool = True, enable_spatial_temporal: bool = True):
+    def __init__(self, vlm_client=None, enable_spatial_relationships: bool = True):
         # Use provided VLM client or get from config
         if vlm_client is None:
             from src.vision_processing.vlm_step_extractor import VLMStepExtractor
@@ -367,9 +367,6 @@ class GraphBuilder:
             enable_spatial_relationships=enable_spatial_relationships
         )
         self.state_tracker = StepStateTracker()
-
-        # Control post-processing based on spatial-temporal flag
-        self.enable_post_processing = enable_post_processing and enable_spatial_temporal
         self.enable_spatial_relationships = enable_spatial_relationships
 
         logger.info("GraphBuilder initialized with 2-stage hierarchical construction")
@@ -378,11 +375,6 @@ class GraphBuilder:
             logger.info("Spatial relationships: ENABLED")
         else:
             logger.warning("⚠ Spatial relationships: DISABLED")
-
-        if self.enable_post_processing:
-            logger.info("Post-processing subassembly analysis: ENABLED")
-        else:
-            logger.warning("⚠ Post-processing (spatial-temporal): DISABLED")
     
     def build_graph(
         self,
@@ -456,28 +448,10 @@ class GraphBuilder:
             "part_catalog": part_catalog
         }
 
-        # Stage 3: POST-PROCESSING ANALYSIS (NEW)
-        if self.enable_post_processing:
-            logger.info("\n[Stage 3/3] Post-Processing Subassembly Analysis")
-            from .post_processing import PostProcessingSubassemblyAnalyzer
-
-            analyzer = PostProcessingSubassemblyAnalyzer(self.vlm_client)
-            graph = analyzer.analyze_and_augment_graph(
-                graph=graph,
-                extracted_steps=extracted_steps
-            )
-
-            # Update local references after augmentation
-            nodes = graph["nodes"]
-            edges = graph["edges"]
-            metadata = graph["metadata"]
-
         logger.info("\n" + "=" * 60)
         logger.info("✓ Hierarchical Graph Construction Complete")
         logger.info(f"  Parts: {metadata['total_parts']}")
         logger.info(f"  Subassemblies: {metadata['total_subassemblies']}")
-        if metadata.get('discovered_subassemblies'):
-            logger.info(f"  Discovered: {metadata['discovered_subassemblies']} (post-processing)")
         logger.info(f"  Steps: {metadata['total_steps']}")
         logger.info(f"  Max Depth: {metadata['max_depth']} layers")
         logger.info("=" * 60)

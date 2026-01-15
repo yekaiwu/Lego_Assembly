@@ -134,6 +134,109 @@ class DependencyGraph:
                 if prev_step_num not in self.reverse_edges[current_step]:
                     self.add_dependency(prev_step_num, current_step)
     
+    def detect_parallel_paths(self) -> List[List[int]]:
+        """
+        Detect independent subassembly paths that can be built in parallel.
+        
+        Returns:
+            List of parallel step sequences
+        """
+        logger.info("Detecting parallel assembly paths...")
+        
+        # Find steps with no dependencies (starting points)
+        start_steps = [
+            step for step in self.nodes 
+            if not self.reverse_edges[step]
+        ]
+        
+        # Trace paths from each starting point
+        parallel_paths = []
+        visited = set()
+        
+        for start in start_steps:
+            if start in visited:
+                continue
+            
+            path = self._trace_path(start, visited)
+            if path:
+                parallel_paths.append(path)
+        
+        logger.info(f"Detected {len(parallel_paths)} parallel paths")
+        return parallel_paths
+    
+    def _trace_path(self, start: int, visited: Set[int]) -> List[int]:
+        """Trace a path from a starting step using DFS."""
+        path = []
+        stack = [start]
+        
+        while stack:
+            step = stack.pop()
+            if step in visited:
+                continue
+            
+            visited.add(step)
+            path.append(step)
+            
+            # Add dependent steps to stack
+            for dependent in self.edges[step]:
+                if dependent not in visited:
+                    stack.append(dependent)
+        
+        return path
+    
+    def group_into_subassemblies(self, max_steps_per_subassembly: int = 5) -> List[Dict[str, Any]]:
+        """
+        Group steps into logical subassemblies.
+        
+        Args:
+            max_steps_per_subassembly: Maximum steps per subassembly
+        
+        Returns:
+            List of subassembly definitions
+        """
+        logger.info("Grouping steps into subassemblies...")
+        
+        parallel_paths = self.detect_parallel_paths()
+        subassemblies = []
+        
+        for path_idx, path in enumerate(parallel_paths):
+            # Split path into chunks
+            for i in range(0, len(path), max_steps_per_subassembly):
+                chunk = path[i:i + max_steps_per_subassembly]
+                
+                subassembly = {
+                    "id": f"sub_{path_idx}_{i // max_steps_per_subassembly}",
+                    "steps": chunk,
+                    "prerequisites": self._get_prerequisites(chunk),
+                    "parts": self._collect_parts(chunk)
+                }
+                subassemblies.append(subassembly)
+        
+        self.subassemblies = subassemblies
+        logger.info(f"Created {len(subassemblies)} subassemblies")
+        return subassemblies
+    
+    def _get_prerequisites(self, steps: List[int]) -> List[int]:
+        """Get all prerequisite steps for a group of steps."""
+        prerequisites = set()
+        for step in steps:
+            prerequisites.update(self.reverse_edges[step])
+        
+        # Remove steps that are within the group itself
+        prerequisites -= set(steps)
+        return list(prerequisites)
+    
+    def _collect_parts(self, steps: List[int]) -> List[Dict[str, Any]]:
+        """Collect all parts used in a group of steps."""
+        parts = []
+        for step in steps:
+            step_info = self.nodes.get(step, {})
+            step_parts = step_info.get("parts_required", [])
+            for part in step_parts:
+                part_copy = part.copy()
+                part_copy["step"] = step
+                parts.append(part_copy)
+        return parts
     
     def topological_sort(self) -> List[int]:
         """
