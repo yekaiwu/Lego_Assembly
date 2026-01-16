@@ -115,7 +115,8 @@ Return ONLY valid JSON as an ARRAY of steps (even if there's only one step):
         "color": "color name",
         "shape": "brick type and dimensions",
         "part_id": "LEGO part ID if visible",
-        "quantity": <number>
+        "quantity": <number>,
+        "bbox": [x1, y1, x2, y2] or null (bounding box in pixels if part is visible, null if not visible)
       }}
     ],
     "existing_assembly": "description of already assembled parts shown",
@@ -145,6 +146,11 @@ CRITICAL INSTRUCTIONS:
 - If the page shows only one step, return ONE object in the array
 - Always return an array [], never a single object
 - Each step should have its correct step_number from the manual
+- For each part in parts_required, provide bbox coordinates [x1, y1, x2, y2] where:
+  * x1, y1 = top-left corner pixel coordinates
+  * x2, y2 = bottom-right corner pixel coordinates
+  * If part is visible in the image, estimate bbox as accurately as possible
+  * If part is NOT visible or is just a reference, set bbox to null
 
 Provide accurate, detailed extraction. If information is unclear, mark as null or "unclear"."""
         else:

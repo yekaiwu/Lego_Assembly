@@ -413,8 +413,9 @@ class SAMSegmenter:
 
         output_path = os.path.join(output_dir, f"part_{part_id}.png")
 
-        # If bbox hint provided, use it directly
+        # If bbox hint provided, use it directly (VLM-guided extraction)
         if bbox_hint:
+            logger.info(f"Extracting part {part_id} using VLM bbox hint: {bbox_hint}")
             component = self.extract_component(
                 image_path=page_path,
                 bbox=bbox_hint,
@@ -422,7 +423,8 @@ class SAMSegmenter:
             )
             return output_path if component else None
 
-        # Otherwise, segment the page and use the first appropriate segment
+        # Otherwise, segment the page and use the first appropriate segment (fallback)
+        logger.info(f"No VLM bbox for part {part_id}, using auto-segmentation fallback")
         segments = self.segment_page(page_path)
 
         if not segments:

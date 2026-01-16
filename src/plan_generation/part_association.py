@@ -5,7 +5,7 @@ Maps physical LEGO parts to their manual representations and assigns roles.
 
 import json
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 from loguru import logger
 
 import sys
@@ -328,10 +328,14 @@ class PartAssociationModule:
                 # Generate a unique part ID for this part
                 part_id = f"{part['color']}_{part['shape']}".replace(" ", "_")
 
+                # Try to find bbox hint from VLM extraction
+                bbox_hint = self._find_part_bbox(part, first_appears_step, extracted_steps)
+
                 # Extract the part image
                 image_path = component_extractor.extract_part_image(
                     part_id=part_id,
                     page_path=page_path,
+                    bbox_hint=bbox_hint,
                     part_data=part
                 )
 
@@ -349,6 +353,51 @@ class PartAssociationModule:
         logger.info(f"Successfully extracted {extracted_count}/{len(parts)} part images")
 
         return parts_with_images
+
+    def _find_part_bbox(
+        self,
+        part: Dict[str, Any],
+        step_number: int,
+        extracted_steps: List[Dict[str, Any]]
+    ) -> Optional[Tuple[int, int, int, int]]:
+        """
+        Find bounding box hint for a part from VLM extraction data.
+
+        Args:
+            part: Part dictionary from catalog
+            step_number: Step number where part first appears
+            extracted_steps: Raw VLM extraction data
+
+        Returns:
+            Bounding box (x1, y1, x2, y2) or None if not found
+        """
+        # Find the step in extracted data
+        matching_step = None
+        for step in extracted_steps:
+            if step.get("step_number") == step_number:
+                matching_step = step
+                break
+
+        if not matching_step:
+            return None
+
+        # Look for matching part in parts_required
+        parts_required = matching_step.get("parts_required", [])
+        for vlm_part in parts_required:
+            # Match by color and shape
+            if (vlm_part.get("color", "").lower() == part.get("color", "").lower() and
+                vlm_part.get("shape", "").lower() in part.get("shape", "").lower()):
+
+                # Check if bbox exists and is valid
+                bbox = vlm_part.get("bbox")
+                if bbox and isinstance(bbox, list) and len(bbox) == 4:
+                    # Validate bbox values
+                    x1, y1, x2, y2 = bbox
+                    if all(isinstance(v, (int, float)) for v in bbox) and x2 > x1 and y2 > y1:
+                        logger.debug(f"Found VLM bbox for {part['name']}: {bbox}")
+                        return tuple(int(v) for v in bbox)
+
+        return None
 
     def _call_vlm_with_custom_prompt(
         self,

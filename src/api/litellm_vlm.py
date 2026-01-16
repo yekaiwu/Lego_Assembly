@@ -248,7 +248,8 @@ class UnifiedVLMClient:
         "color": "color name",
         "shape": "brick type and dimensions",
         "part_id": "LEGO part ID if visible",
-        "quantity": <number>
+        "quantity": <number>,
+        "bbox": [x1, y1, x2, y2] or null (bounding box in pixels if part is visible, null if not visible)
       }}
     ],
     "existing_assembly": "description of already assembled parts shown",
@@ -279,6 +280,11 @@ INSTRUCTIONS:
 3. Return ALL steps as an array, even if there's only one
 4. Keep descriptions concise (max 10-15 words per field)
 5. Return ONLY the JSON array, no additional text
+6. For each part in parts_required, provide bbox coordinates [x1, y1, x2, y2] where:
+   - x1, y1 = top-left corner pixel coordinates
+   - x2, y2 = bottom-right corner pixel coordinates
+   - If part is visible in the image, estimate bbox as accurately as possible
+   - If part is NOT visible or is just a reference, set bbox to null
 
 If only ONE step exists on the page, return an array with one element: [{{...}}]
 If TWO steps exist, return an array with two elements: [{{...}}, {{...}}]"""
