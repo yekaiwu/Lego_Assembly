@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 from src.utils.cache import get_cache
 from src.utils.config import get_config
-from src.api.gemini_api import GeminiVisionClient
+from src.api.litellm_vlm import UnifiedVLMClient
 
 def test_cache_functionality():
     """Test that caching works as expected."""
@@ -109,11 +109,21 @@ def test_cache_functionality():
     print(f"  Assembly 456: {retrieved_2}")
     
     print("\n" + "=" * 80)
-    print("TEST 4: Real Gemini API Call (If Key Available)")
+    print("TEST 4: Real VLM API Call (If Key Available)")
     print("=" * 80)
-    
-    if not config.api.gemini_api_key:
-        print("⚠️  Skipping: No GEMINI_API_KEY found")
+
+    # Use the configured ingestion VLM
+    vlm_model = config.models.ingestion_vlm if hasattr(config.models, 'ingestion_vlm') else "gemini/gemini-2.0-flash"
+
+    # Check if we have any API key
+    has_api_key = any([
+        config.api.gemini_api_key,
+        config.api.openai_api_key,
+        config.api.anthropic_api_key
+    ])
+
+    if not has_api_key:
+        print("⚠️  Skipping: No API key found (checked GEMINI, OPENAI, ANTHROPIC)")
     else:
         # Check if test image exists
         test_image = Path("../output/temp_pages/page_001.png")
@@ -121,19 +131,20 @@ def test_cache_functionality():
             print(f"⚠️  Skipping: Test image not found at {test_image}")
         else:
             print(f"✓ Test image found: {test_image}")
-            
-            # Create Gemini client
-            gemini_client = GeminiVisionClient()
+            print(f"✓ Using VLM model: {vlm_model}")
+
+            # Create VLM client
+            vlm_client = UnifiedVLMClient(vlm_model)
             
             # Clear cache for this specific call
-            test_cache_key = f"{gemini_client.model}:{str(test_image)}:test_step:cache_test"
-            
+            test_cache_key = f"{vlm_client.model}:{str(test_image)}:test_step:cache_test"
+
             # First call (should hit API)
             print("\n  → Making first API call (should cache)...")
             start_time = time.time()
-            
+
             try:
-                result_1 = gemini_client.extract_step_info(
+                result_1 = vlm_client.extract_step_info(
                     [str(test_image)],
                     step_number=999,  # Use unique step number
                     use_json_mode=True,
@@ -141,17 +152,20 @@ def test_cache_functionality():
                 )
                 first_call_time = time.time() - start_time
                 print(f"  ✓ First call completed in {first_call_time:.2f}s")
-                
-                if "error" in result_1:
-                    print(f"  ⚠️  API returned error: {result_1.get('error')}")
+
+                # UnifiedVLMClient returns a list, check first element
+                result_item = result_1[0] if isinstance(result_1, list) else result_1
+
+                if "error" in result_item:
+                    print(f"  ⚠️  API returned error: {result_item.get('error')}")
                 else:
                     print(f"  ✓ Received valid response with {len(str(result_1))} characters")
-                
+
                 # Second call (should use cache)
                 print("\n  → Making second API call (should use cache)...")
                 start_time = time.time()
-                
-                result_2 = gemini_client.extract_step_info(
+
+                result_2 = vlm_client.extract_step_info(
                     [str(test_image)],
                     step_number=999,
                     use_json_mode=True,
