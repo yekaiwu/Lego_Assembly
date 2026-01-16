@@ -4,7 +4,18 @@ import { useQuery } from '@tanstack/react-query'
 import { api } from '@/lib/api/client'
 import { useManualStore } from '@/lib/store/manualStore'
 import { Loader2, Layers, Box, Component } from 'lucide-react'
-import { useState } from 'react'
+import { useState, useMemo, useCallback, useEffect } from 'react'
+import ReactFlow, {
+  Node,
+  Edge,
+  Controls,
+  Background,
+  MiniMap,
+  useNodesState,
+  useEdgesState,
+  MarkerType,
+} from 'reactflow'
+import 'reactflow/dist/style.css'
 
 interface GraphNode {
   node_id: string
@@ -40,6 +51,103 @@ interface GraphData {
   edges: GraphEdge[]
 }
 
+// Transform graph data to React Flow format
+function transformToReactFlow(graphData: GraphData) {
+  // Group nodes by layer for layout
+  const nodesByLayer: Record<number, GraphNode[]> = {}
+  graphData.nodes.forEach((node) => {
+    if (!nodesByLayer[node.layer]) nodesByLayer[node.layer] = []
+    nodesByLayer[node.layer].push(node)
+  })
+
+  const layers = Object.keys(nodesByLayer)
+    .map(Number)
+    .sort((a, b) => a - b)
+
+  // Calculate positions for nodes (hierarchical layout)
+  const LAYER_HEIGHT = 200
+  const NODE_SPACING = 250
+  const nodes: Node[] = []
+
+  layers.forEach((layer) => {
+    const layerNodes = nodesByLayer[layer]
+    const layerWidth = layerNodes.length * NODE_SPACING
+    const startX = -layerWidth / 2
+
+    layerNodes.forEach((node, index) => {
+      const x = startX + index * NODE_SPACING
+      const y = layer * LAYER_HEIGHT
+
+      // Get node styling based on type
+      let bgColor = '#f3f4f6'
+      let borderColor = '#9ca3af'
+      if (node.type === 'model') {
+        bgColor = '#e9d5ff'
+        borderColor = '#a855f7'
+      } else if (node.type === 'subassembly') {
+        bgColor = '#dbeafe'
+        borderColor = '#3b82f6'
+      } else if (node.type === 'part') {
+        bgColor = '#d1fae5'
+        borderColor = '#10b981'
+      }
+
+      nodes.push({
+        id: node.node_id,
+        type: 'default',
+        position: { x, y },
+        data: {
+          label: (
+            <div className="text-center">
+              <div className="font-semibold text-sm">{node.name}</div>
+              <div className="text-xs text-gray-600">Step {node.step_created}</div>
+            </div>
+          ),
+          originalNode: node,
+        },
+        style: {
+          background: bgColor,
+          border: `2px solid ${borderColor}`,
+          borderRadius: '8px',
+          padding: '10px',
+          minWidth: '180px',
+        },
+      })
+    })
+  })
+
+  // Transform edges
+  const edges: Edge[] = graphData.edges.map((edge, index) => {
+    // Different styles for different edge types
+    const isAttachment = edge.type === 'attachment'
+    return {
+      id: `edge-${index}`,
+      source: edge.from,
+      target: edge.to,
+      type: 'smoothstep',
+      animated: false,
+      style: {
+        stroke: isAttachment ? '#3b82f6' : '#10b981',
+        strokeWidth: 2,
+      },
+      markerEnd: {
+        type: MarkerType.ArrowClosed,
+        color: isAttachment ? '#3b82f6' : '#10b981',
+      },
+      label: edge.type,
+      labelStyle: {
+        fontSize: 10,
+        fill: '#6b7280',
+      },
+      labelBgStyle: {
+        fill: '#ffffff',
+      },
+    }
+  })
+
+  return { nodes, edges }
+}
+
 export default function GraphVisualization() {
   const { selectedManual } = useManualStore()
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null)
@@ -49,6 +157,30 @@ export default function GraphVisualization() {
     queryFn: () => api.getGraph(selectedManual!),
     enabled: !!selectedManual,
   })
+
+  // Transform graph data to React Flow format
+  const { nodes: initialNodes, edges: initialEdges } = useMemo(() => {
+    if (!graphData) return { nodes: [], edges: [] }
+    return transformToReactFlow(graphData)
+  }, [graphData])
+
+  const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes)
+  const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges)
+
+  // Update nodes and edges when data changes
+  useEffect(() => {
+    setNodes(initialNodes)
+    setEdges(initialEdges)
+  }, [initialNodes, initialEdges, setNodes, setEdges])
+
+  // Handle node click
+  const onNodeClick = useCallback(
+    (_event: React.MouseEvent, node: Node) => {
+      const originalNode = node.data.originalNode as GraphNode
+      setSelectedNode(originalNode)
+    },
+    []
+  )
 
   if (!selectedManual) {
     return (
@@ -75,13 +207,6 @@ export default function GraphVisualization() {
     )
   }
 
-  // Group nodes by layer
-  const nodesByLayer = graphData.nodes.reduce((acc, node) => {
-    if (!acc[node.layer]) acc[node.layer] = []
-    acc[node.layer].push(node)
-    return acc
-  }, {} as Record<number, GraphNode[]>)
-
   const getNodeIcon = (type: string) => {
     switch (type) {
       case 'model':
@@ -92,19 +217,6 @@ export default function GraphVisualization() {
         return <Box className="w-4 h-4" />
       default:
         return <Box className="w-4 h-4" />
-    }
-  }
-
-  const getNodeColor = (type: string) => {
-    switch (type) {
-      case 'model':
-        return 'bg-purple-100 border-purple-400 text-purple-900'
-      case 'subassembly':
-        return 'bg-blue-100 border-blue-400 text-blue-900'
-      case 'part':
-        return 'bg-green-100 border-green-400 text-green-900'
-      default:
-        return 'bg-gray-100 border-gray-400 text-gray-900'
     }
   }
 
@@ -141,43 +253,61 @@ export default function GraphVisualization() {
         </div>
       </div>
 
-      {/* Hierarchical View */}
+      {/* Interactive Graph View with Edges */}
       <div className="bg-white rounded-lg shadow p-4">
-        <h2 className="text-lg font-semibold mb-4">Hierarchical Structure</h2>
+        <h2 className="text-lg font-semibold mb-4">
+          Interactive Graph Visualization
+        </h2>
 
-        <div className="space-y-6 overflow-x-auto">
-          {Object.keys(nodesByLayer)
-            .sort((a, b) => Number(a) - Number(b))
-            .map((layer) => (
-              <div key={layer}>
-                <div className="text-xs font-semibold text-gray-500 mb-2">
-                  Layer {layer}
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  {nodesByLayer[Number(layer)].map((node) => (
-                    <button
-                      key={node.node_id}
-                      onClick={() => setSelectedNode(node)}
-                      className={`flex items-center space-x-2 px-3 py-2 rounded-lg border-2 transition-all hover:shadow-md ${getNodeColor(
-                        node.type
-                      )} ${
-                        selectedNode?.node_id === node.node_id
-                          ? 'ring-2 ring-offset-2 ring-blue-500'
-                          : ''
-                      }`}
-                    >
-                      {getNodeIcon(node.type)}
-                      <div className="text-left">
-                        <div className="text-xs font-semibold">{node.name}</div>
-                        <div className="text-xs opacity-75">
-                          Step {node.step_created}
-                        </div>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ))}
+        {/* Legend */}
+        <div className="mb-4 flex flex-wrap gap-4 text-sm">
+          <div className="flex items-center gap-2">
+            <div className="w-4 h-4 bg-purple-200 border-2 border-purple-400 rounded"></div>
+            <span>Model</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-4 h-4 bg-blue-200 border-2 border-blue-400 rounded"></div>
+            <span>Subassembly</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-4 h-4 bg-green-200 border-2 border-green-400 rounded"></div>
+            <span>Part</span>
+          </div>
+          <div className="flex items-center gap-2 ml-4">
+            <div className="w-8 h-0.5 bg-blue-500"></div>
+            <span>Attachment</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-0.5 bg-green-500"></div>
+            <span>Component</span>
+          </div>
+        </div>
+
+        <div className="h-[600px] border-2 border-gray-200 rounded-lg">
+          <ReactFlow
+            nodes={nodes}
+            edges={edges}
+            onNodesChange={onNodesChange}
+            onEdgesChange={onEdgesChange}
+            onNodeClick={onNodeClick}
+            fitView
+            attributionPosition="bottom-left"
+          >
+            <Controls />
+            <Background />
+            <MiniMap
+              nodeColor={(node) => {
+                const originalNode = node.data.originalNode as GraphNode
+                if (originalNode.type === 'model') return '#a855f7'
+                if (originalNode.type === 'subassembly') return '#3b82f6'
+                return '#10b981'
+              }}
+            />
+          </ReactFlow>
+        </div>
+
+        <div className="mt-2 text-sm text-gray-600">
+          💡 <strong>Tip:</strong> Use mouse wheel to zoom, drag to pan, click nodes to see details
         </div>
       </div>
 
@@ -258,16 +388,11 @@ export default function GraphVisualization() {
         </div>
       )}
 
-      {/* Instructions */}
+      {/* Graph Statistics */}
       <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
         <p className="text-sm text-blue-800">
-          💡 <strong>Tip:</strong> For advanced graph visualization with
-          interactive layouts, install a library like{' '}
-          <code className="bg-blue-100 px-1 rounded">reactflow</code> or{' '}
-          <code className="bg-blue-100 px-1 rounded">cytoscape</code>. The graph
-          data is available via <code className="bg-blue-100 px-1 rounded">
-            GET /api/manual/{'{manual_id}'}/graph
-          </code>
+          📊 <strong>Graph Stats:</strong> Displaying {graphData.nodes.length} nodes
+          and {graphData.edges.length} edges across {graphData.metadata.max_depth + 1} layers
         </p>
       </div>
     </div>

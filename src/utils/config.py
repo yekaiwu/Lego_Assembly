@@ -76,9 +76,6 @@ class ProcessingConfig(BaseModel):
     enable_spatial_relationships: bool = Field(
         default_factory=lambda: os.getenv("ENABLE_SPATIAL_RELATIONSHIPS", "true").lower() == "true"
     )
-    enable_spatial_temporal_patterns: bool = Field(
-        default_factory=lambda: os.getenv("ENABLE_SPATIAL_TEMPORAL_PATTERNS", "true").lower() == "true"
-    )
 
 class SystemConfig(BaseModel):
     """Overall system configuration."""

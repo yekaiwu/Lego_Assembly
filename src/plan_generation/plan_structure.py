@@ -41,10 +41,10 @@ class PlanStructureGenerator:
             Complete assembly plan structure
         """
         logger.info(f"Generating assembly plan for {assembly_id}...")
-        
-        # Build subassemblies
-        subassemblies = dependency_graph.group_into_subassemblies()
-        
+
+        # Subassemblies are now detected by VLM in graph_builder, not from dependency graph
+        subassemblies = []
+
         # Process each step and assign 3D positions
         processed_steps = self._process_steps(extracted_steps, dependency_graph)
         

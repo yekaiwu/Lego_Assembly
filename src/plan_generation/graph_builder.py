@@ -33,121 +33,160 @@ class SubassemblyDetector:
     ) -> List[Dict[str, Any]]:
         """
         Detect subassemblies across all steps.
-        
+        UPDATED: Every step now creates a new subassembly node for step-by-step progression.
+
         Returns:
             List of subassembly definitions
         """
-        logger.info("Detecting subassemblies using VLM-guided analysis")
-        
+        logger.info("Detecting subassemblies using VLM-guided analysis (every step creates node)")
+
         subassemblies = []
         subasm_id_counter = 0
-        
-        # Track accumulated parts across steps
-        accumulated_parts = []
-        
+        previous_step_subassembly = None  # Track previous step's subassembly for sequential linking
+
         for step_idx, step in enumerate(extracted_steps):
             step_number = step.get("step_number", step_idx + 1)
-            
+
             # Skip non-build steps
             if not step.get("parts_required"):
                 continue
-            
-            # Add new parts from this step
-            new_parts = step.get("parts_required", [])
-            accumulated_parts.extend(new_parts)
-            
-            # Check if this step creates a subassembly
-            detected = self._detect_subassembly_in_step(
+
+            # Get parts from this step
+            parts_in_step = step.get("parts_required", [])
+
+            # Every step creates a new subassembly node
+            subassembly = self._create_subassembly_for_step(
                 step=step,
                 step_number=step_number,
-                accumulated_parts=accumulated_parts,
+                parts=parts_in_step,
+                previous_subassembly=previous_step_subassembly,
                 manual_page=manual_pages[step_idx] if step_idx < len(manual_pages) else None,
                 assembly_id=assembly_id
             )
-            
-            if detected:
-                detected["subassembly_id"] = f"subasm_{subasm_id_counter}"
-                subassemblies.append(detected)
+
+            if subassembly:
+                subassembly["subassembly_id"] = f"subasm_{subasm_id_counter}"
+                subassemblies.append(subassembly)
+
+                # Update previous step's subassembly for next iteration
+                previous_step_subassembly = subassembly["subassembly_id"]
+
+                logger.debug(f"Created subassembly for step {step_number}: {subassembly['name']}")
                 subasm_id_counter += 1
-                
-                logger.debug(f"Detected subassembly at step {step_number}: {detected['name']}")
-        
-        # Build hierarchy relationships
-        subassemblies = self._build_hierarchy(subassemblies, extracted_steps)
-        
-        logger.info(f"Detected {len(subassemblies)} subassemblies")
-        
+
+        logger.info(f"Created {len(subassemblies)} subassemblies (one per step)")
+
         return subassemblies
     
-    def _detect_subassembly_in_step(
+    def _create_subassembly_for_step(
         self,
         step: Dict[str, Any],
         step_number: int,
-        accumulated_parts: List[Dict[str, Any]],
+        parts: List[Dict[str, Any]],
+        previous_subassembly: Optional[str],
         manual_page: Optional[str],
         assembly_id: str
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Dict[str, Any]:
         """
-        Check if a step creates a subassembly.
-        Uses heuristics + VLM confirmation.
-        """
-        # Heuristic 1: Functional grouping
-        parts = step.get("parts_required", [])
-        actions = step.get("actions", [])
+        Create a subassembly node for this step.
+        UPDATED: Every step creates a new subassembly, showing step-by-step progression.
 
-        # Look for functional keywords in descriptions
-        functional_keywords = ["wheel", "wing", "base", "body", "roof", "door", "window", "frame"]
-        notes = (step.get("notes") or "").lower()  # Handle None explicitly
-        
-        has_functional_parts = any(
-            any(kw in (part.get("shape") or "").lower() or kw in (part.get("description") or "").lower()
-                for kw in functional_keywords)
-            for part in parts
-        )
-        
-        # Heuristic 2: Multiple parts connected
-        has_multiple_connections = len(actions) >= 2
-        
-        # Heuristic 3: Check if description suggests completion
-        completion_keywords = ["complete", "finish", "assembly", "attach to", "now add"]
-        suggests_completion = any(kw in notes for kw in completion_keywords)
-        
-        # Decide if this is likely a subassembly
-        likely_subassembly = (
-            (has_functional_parts and len(parts) >= 2) or
-            (has_multiple_connections and len(parts) >= 3) or
-            suggests_completion
-        )
-        
-        if not likely_subassembly:
-            return None
-        
+        Two patterns for parent relationships:
+        - Pattern 1 (continues_previous): Link to previous step's subassembly (sequential chain)
+        - Pattern 2 (is_new_subassembly): Link to parent via context_references (cross-reference)
+        """
+        actions = step.get("actions", [])
+        notes = (step.get("notes") or "").lower()
+
         # Extract component part signatures
         component_parts = [
             f"{p.get('color', 'unknown')}:{p.get('shape', 'unknown')}"
             for p in parts
         ]
-        
+
         # Determine subassembly purpose/name
         subasm_name = self._infer_subassembly_name(parts, actions, notes)
-        
+
+        # Determine parent relationship using VLM hints
+        parent_subassembly = None
+
+        # Pattern 1: continues_previous → link to previous step's subassembly (sequential chain)
+        if step.get("continues_previous", False) and previous_subassembly:
+            parent_subassembly = previous_subassembly
+            logger.debug(f"Step {step_number}: Sequential link to {previous_subassembly}")
+
+        # Pattern 2: is_new_subassembly → link to parent via context_references (cross-reference)
+        elif step.get("is_new_subassembly", False):
+            # Try to find parent from context_references
+            context_refs = step.get("context_references", [])
+            if context_refs:
+                # Find the most recent subassembly referenced
+                # context_refs might contain step numbers or descriptions
+                parent_subassembly = self._resolve_parent_from_context(context_refs, step_number)
+                logger.debug(f"Step {step_number}: Cross-reference to {parent_subassembly}")
+            else:
+                # No context references, attach to model root
+                parent_subassembly = None
+                logger.debug(f"Step {step_number}: New subassembly with no parent (will attach to model)")
+
+        # Default: if no pattern matched, treat as continues_previous
+        else:
+            if previous_subassembly:
+                parent_subassembly = previous_subassembly
+                logger.debug(f"Step {step_number}: Default sequential link to {previous_subassembly}")
+
         # Create subassembly definition
         subassembly = {
             "name": subasm_name,
             "created_in_step": step_number,
             "component_parts": component_parts,
-            "parent_subassembly": None,  # Will be set in hierarchy building
+            "parent_subassembly": parent_subassembly,
             "child_subassemblies": [],
             "purpose": self._infer_purpose(parts, actions, notes),
+            "continues_previous": step.get("continues_previous", False),
+            "is_new_subassembly": step.get("is_new_subassembly", False),
             "completeness_markers": {
                 "required_parts": len(component_parts),
                 "required_connections": self._extract_connections(actions),
                 "spatial_signature": self._extract_spatial_signature(step)
             }
         }
-        
+
         return subassembly
-    
+
+    def _resolve_parent_from_context(
+        self,
+        context_refs: List[Any],
+        current_step: int
+    ) -> Optional[str]:
+        """
+        Resolve parent subassembly from context_references.
+
+        context_refs might contain:
+        - Step numbers (e.g., [1, 2])
+        - Descriptions (e.g., ["body assembly"])
+
+        Returns the subassembly ID of the most recent reference.
+        """
+        # For now, use simple heuristic: find the highest step number less than current_step
+        referenced_steps = []
+
+        for ref in context_refs:
+            if isinstance(ref, int) and ref < current_step:
+                referenced_steps.append(ref)
+            elif isinstance(ref, str) and ref.isdigit():
+                step_num = int(ref)
+                if step_num < current_step:
+                    referenced_steps.append(step_num)
+
+        if referenced_steps:
+            # Return the subassembly ID for the most recent referenced step
+            most_recent_step = max(referenced_steps)
+            # Subassembly IDs are 0-indexed: step 1 → subasm_0, step 2 → subasm_1
+            return f"subasm_{most_recent_step - 1}"
+
+        return None
+
     def _infer_subassembly_name(
         self,
         parts: List[Dict[str, Any]],
@@ -230,37 +269,6 @@ class SubassemblyDetector:
             return orientation
 
         return "standard arrangement"
-    
-    def _build_hierarchy(
-        self,
-        subassemblies: List[Dict[str, Any]],
-        extracted_steps: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
-        """
-        Build parent-child relationships between subassemblies.
-        Later subassemblies may attach to earlier ones.
-        """
-        # Simple heuristic: if a subassembly's parts include references to earlier subassemblies,
-        # it's a child of those subassemblies
-        
-        for i, subasm in enumerate(subassemblies):
-            # Check if any later subassemblies reference this one
-            for j in range(i + 1, len(subassemblies)):
-                later_subasm = subassemblies[j]
-                later_step = later_subasm["created_in_step"]
-                
-                # Get the step description
-                if later_step - 1 < len(extracted_steps):
-                    step_data = extracted_steps[later_step - 1]
-                    existing_assembly = (step_data.get("existing_assembly") or "").lower()
-                    
-                    # Check if this subassembly is mentioned
-                    if subasm["name"].lower() in existing_assembly:
-                        # later_subasm attaches to subasm
-                        later_subasm["parent_subassembly"] = subasm["subassembly_id"]
-                        subasm["child_subassemblies"].append(later_subasm["subassembly_id"])
-        
-        return subassemblies
 
 
 class StepStateTracker:
@@ -347,7 +355,7 @@ class GraphBuilder:
     Builds hierarchical assembly graph following Manual2Skill's 2-stage approach.
     """
 
-    def __init__(self, vlm_client=None, enable_post_processing=True, enable_spatial_relationships: bool = True, enable_spatial_temporal: bool = True):
+    def __init__(self, vlm_client=None, enable_spatial_relationships: bool = True):
         # Use provided VLM client or get from config
         if vlm_client is None:
             from src.vision_processing.vlm_step_extractor import VLMStepExtractor
@@ -367,9 +375,6 @@ class GraphBuilder:
             enable_spatial_relationships=enable_spatial_relationships
         )
         self.state_tracker = StepStateTracker()
-
-        # Control post-processing based on spatial-temporal flag
-        self.enable_post_processing = enable_post_processing and enable_spatial_temporal
         self.enable_spatial_relationships = enable_spatial_relationships
 
         logger.info("GraphBuilder initialized with 2-stage hierarchical construction")
@@ -378,11 +383,6 @@ class GraphBuilder:
             logger.info("Spatial relationships: ENABLED")
         else:
             logger.warning("⚠ Spatial relationships: DISABLED")
-
-        if self.enable_post_processing:
-            logger.info("Post-processing subassembly analysis: ENABLED")
-        else:
-            logger.warning("⚠ Post-processing (spatial-temporal): DISABLED")
     
     def build_graph(
         self,
@@ -456,28 +456,10 @@ class GraphBuilder:
             "part_catalog": part_catalog
         }
 
-        # Stage 3: POST-PROCESSING ANALYSIS (NEW)
-        if self.enable_post_processing:
-            logger.info("\n[Stage 3/3] Post-Processing Subassembly Analysis")
-            from .post_processing import PostProcessingSubassemblyAnalyzer
-
-            analyzer = PostProcessingSubassemblyAnalyzer(self.vlm_client)
-            graph = analyzer.analyze_and_augment_graph(
-                graph=graph,
-                extracted_steps=extracted_steps
-            )
-
-            # Update local references after augmentation
-            nodes = graph["nodes"]
-            edges = graph["edges"]
-            metadata = graph["metadata"]
-
         logger.info("\n" + "=" * 60)
         logger.info("✓ Hierarchical Graph Construction Complete")
         logger.info(f"  Parts: {metadata['total_parts']}")
         logger.info(f"  Subassemblies: {metadata['total_subassemblies']}")
-        if metadata.get('discovered_subassemblies'):
-            logger.info(f"  Discovered: {metadata['discovered_subassemblies']} (post-processing)")
         logger.info(f"  Steps: {metadata['total_steps']}")
         logger.info(f"  Max Depth: {metadata['max_depth']} layers")
         logger.info("=" * 60)
@@ -626,17 +608,17 @@ class GraphBuilder:
         subassemblies: List[Dict[str, Any]],
         extracted_steps: List[Dict[str, Any]]
     ) -> Optional[str]:
-        """Find which subassembly a part belongs to."""
-        part_signature = f"{part_data.get('color', '')}:{part_data.get('shape', '')}"
+        """
+        Find which subassembly a part belongs to.
+        UPDATED: Simplified to match parts to their step's subassembly (every step has one).
+        """
         part_step = part_data.get("first_appears_step", 1)
-        
-        # Find subassemblies created in the same step
+
+        # Find the subassembly created in the same step
         for subasm in subassemblies:
             if subasm["created_in_step"] == part_step:
-                # Check if part is in component parts
-                if part_signature in subasm.get("component_parts", []):
-                    return subasm["subassembly_id"]
-        
+                return subasm["subassembly_id"]
+
         return None
     
     def _assign_layers(self, nodes: List[Dict[str, Any]]):
@@ -681,8 +663,7 @@ class GraphBuilder:
             "max_depth": max_depth,
             "generated_at": datetime.now().isoformat(),
             "configuration": {
-                "spatial_relationships_enabled": self.enable_spatial_relationships,
-                "spatial_temporal_enabled": self.enable_post_processing
+                "spatial_relationships_enabled": self.enable_spatial_relationships
             }
         }
     
