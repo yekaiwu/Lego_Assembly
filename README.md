@@ -17,6 +17,7 @@ This system provides end-to-end LEGO assembly assistance through an integrated w
 - 3D plan generation with spatial reasoning
 - Dependency graph construction
 - **🧠 Hierarchical Assembly Graph**: Parts → Subassemblies → Model structure (enhanced with context hints)
+- **🖼️ SAM Component Extraction**: Automatic extraction and storage of individual part and subassembly images
 - Part database integration with Rebrickable
 
 ### **Phase 2: Multimodal RAG Ingestion** ⭐ Automatic
@@ -87,8 +88,10 @@ Lego_Assembly/
 ├── src/                         # Phase 1: Manual Processing
 │   ├── api/                    # VLM clients (Qwen, DeepSeek, Kimi)
 │   ├── vision_processing/      # PDF extraction & VLM analysis
+│   │   └── sam_segmenter.py   # 🖼️ NEW: SAM-based component segmentation
 │   ├── plan_generation/        # 3D planning, part database & graph builder
-│   │   └── graph_builder.py   # 🧠 NEW: Hierarchical graph construction
+│   │   ├── graph_builder.py   # 🧠 NEW: Hierarchical graph construction
+│   │   └── component_extractor.py  # 🖼️ NEW: Component image extraction service
 │   └── utils/                  # Configuration & caching
 │
 ├── backend/                     # Phase 2: Vision-Enhanced RAG
@@ -125,7 +128,10 @@ Lego_Assembly/
 │   ├── {manual_id}_plan.json          # 3D assembly plan
 │   ├── {manual_id}_dependencies.json  # Dependency graph
 │   ├── {manual_id}_graph.json         # 🧠 NEW: Hierarchical assembly graph
-│   └── temp_pages/*.png               # Step images
+│   ├── temp_pages/*.png               # Step images
+│   └── components/                     # 🖼️ NEW: Extracted component images
+│       ├── part_*.png                 # Individual part images
+│       └── subasm_*.png               # Subassembly images
 │
 └── data/
     └── parts_database.db       # LEGO parts cache
@@ -670,6 +676,12 @@ MAX_CONTEXT_LENGTH=4000
 # Part Database
 PARTS_DB_PATH=./data/parts_database.db
 REBRICKABLE_API_KEY=...           # Optional, for part enrichment
+
+# SAM (Segment Anything Model) Settings
+ENABLE_SAM=true                    # Enable/disable component image extraction
+SAM_MODEL=sam2_b                   # sam2_b (base), sam2_l (large), sam2_s (small), sam2_t (tiny)
+SAM_CONFIDENCE_THRESHOLD=0.5       # Detection confidence threshold (0.0 to 1.0)
+COMPONENTS_DIR=components          # Component images directory (relative to OUTPUT_DIR)
 ```
 
 ### LLM Provider Selection
@@ -690,6 +702,40 @@ REBRICKABLE_API_KEY=...           # Optional, for part enrichment
 - 32K context window
 - Cost: ~¥0.12/1K tokens (~$0.017)
 - Note: Uses Qwen for embeddings
+
+### SAM (Segment Anything Model) Configuration
+
+**Purpose**: Automatically extracts individual part and subassembly images from instruction pages using computer vision.
+
+**Features**:
+- Segments individual components from instruction diagrams
+- Stores cropped images in the `components/` directory
+- Adds `image_path` field to graph nodes (parts and subassemblies)
+- Enables visual graph visualization and better user experience
+
+**Model Selection**:
+- `sam2_t` (tiny): Fastest, lowest memory, good for resource-constrained environments
+- `sam2_s` (small): Balanced performance
+- `sam2_b` (base): **Recommended** - Best balance of speed and accuracy
+- `sam2_l` (large): Highest accuracy, slower processing, more memory
+
+**Configuration**:
+```bash
+ENABLE_SAM=true                    # Set to false to disable component extraction
+SAM_MODEL=sam2_b                   # Choose model size
+SAM_CONFIDENCE_THRESHOLD=0.5       # Lower = more detections, higher = more accurate
+COMPONENTS_DIR=components          # Output directory for component images
+```
+
+**Requirements**:
+- PyTorch 2.0+ (automatically installed)
+- ~2-4 GB RAM for sam2_b model
+- GPU support optional (uses CPU by default, MPS on Apple Silicon)
+
+**Disabling SAM**: If you want to skip component image extraction (faster processing, less storage):
+```bash
+ENABLE_SAM=false
+```
 
 ---
 

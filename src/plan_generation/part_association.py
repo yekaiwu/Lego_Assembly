@@ -108,52 +108,64 @@ class PartAssociationModule:
         self,
         extracted_steps: List[Dict[str, Any]],
         manual_pages: List[str],
-        assembly_id: str
+        assembly_id: str,
+        component_extractor=None
     ) -> Dict[str, Any]:
         """
         Build complete part catalog from manual pages.
-        
+
         Args:
             extracted_steps: Previously extracted step data
             manual_pages: List of paths to manual page images
             assembly_id: Assembly identifier for caching
-        
+            component_extractor: Optional ComponentExtractor for extracting part images
+
         Returns:
             Dictionary with parts_catalog and confidence
         """
         logger.info(f"Building part catalog for assembly {assembly_id}")
         logger.info(f"Analyzing {len(manual_pages)} pages, {len(extracted_steps)} steps")
-        
+
         catalog = PartCatalog()
-        
+
         # Phase 1: Extract parts from already-extracted step data
         parts_from_steps = self._extract_parts_from_steps(extracted_steps)
         logger.info(f"Found {len(parts_from_steps)} unique part types from step data")
-        
+
         # Phase 2: VLM analysis for part roles and detailed descriptions
         # Filter relevant pages (skip cover pages, ads, etc.)
         relevant_pages = self._filter_relevant_pages(manual_pages, extracted_steps)
         logger.info(f"Filtered to {len(relevant_pages)} relevant pages")
-        
+
         # Analyze parts in batches to determine roles
         enriched_parts = self._enrich_parts_with_roles(
-            parts_from_steps, 
+            parts_from_steps,
             relevant_pages[:10],  # Analyze first 10 relevant pages
             assembly_id
         )
-        
+
+        # Phase 2.5: Extract component images (if SAM is enabled)
+        if component_extractor and component_extractor.is_enabled():
+            logger.info("Extracting part images with SAM")
+            enriched_parts = self._extract_part_images(
+                enriched_parts,
+                extracted_steps,
+                manual_pages,
+                component_extractor
+            )
+
         # Phase 3: Build catalog
         for i, part_data in enumerate(enriched_parts):
             part_data["label_id"] = f"part_{i}"
             catalog.add_part(part_data)
-        
+
         result = catalog.to_dict()
         result["confidence"] = self._calculate_catalog_confidence(enriched_parts)
-        
+
         logger.info(f"Part catalog built: {result['total_parts']} unique parts")
         logger.info(f"  Role breakdown: {result['parts_by_role']}")
         logger.info(f"  Confidence: {result['confidence']:.2f}")
-        
+
         return result
     
     def _extract_parts_from_steps(
@@ -279,6 +291,64 @@ class PartAssociationModule:
             logger.warning(f"VLM role assignment failed: {e}. Using heuristics.")
             # Fallback: use heuristic role assignment
             return [self._assign_role_heuristic(p) for p in parts]
+
+    def _extract_part_images(
+        self,
+        parts: List[Dict[str, Any]],
+        extracted_steps: List[Dict[str, Any]],
+        manual_pages: List[str],
+        component_extractor
+    ) -> List[Dict[str, Any]]:
+        """
+        Extract component images for parts using SAM.
+
+        Args:
+            parts: List of part data dictionaries
+            extracted_steps: Previously extracted step data
+            manual_pages: List of paths to manual page images
+            component_extractor: ComponentExtractor instance
+
+        Returns:
+            Parts list with image_path field added
+        """
+        logger.info(f"Extracting images for {len(parts)} parts")
+
+        parts_with_images = []
+        for part in parts:
+            part_copy = part.copy()
+
+            # Find the first step where this part appears
+            first_appears_step = part.get("first_appears_step", 1)
+
+            # Get the page path for this step
+            if first_appears_step <= len(manual_pages):
+                page_idx = first_appears_step - 1  # Convert to 0-based index
+                page_path = manual_pages[page_idx]
+
+                # Generate a unique part ID for this part
+                part_id = f"{part['color']}_{part['shape']}".replace(" ", "_")
+
+                # Extract the part image
+                image_path = component_extractor.extract_part_image(
+                    part_id=part_id,
+                    page_path=page_path,
+                    part_data=part
+                )
+
+                if image_path:
+                    part_copy["image_path"] = image_path
+                    logger.debug(f"✓ Extracted image for {part['name']}: {image_path}")
+                else:
+                    logger.debug(f"✗ Failed to extract image for {part['name']}")
+            else:
+                logger.warning(f"Step {first_appears_step} out of range for part {part['name']}")
+
+            parts_with_images.append(part_copy)
+
+        extracted_count = sum(1 for p in parts_with_images if p.get("image_path"))
+        logger.info(f"Successfully extracted {extracted_count}/{len(parts)} part images")
+
+        return parts_with_images
 
     def _call_vlm_with_custom_prompt(
         self,
