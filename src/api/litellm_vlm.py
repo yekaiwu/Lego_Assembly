@@ -76,6 +76,9 @@ class UnifiedVLMClient:
         # Build prompt
         prompt = self._build_extraction_prompt(step_number, use_json_mode)
 
+        # DEBUG: Log the prompt to verify bbox instructions are included
+        logger.debug(f"Extraction prompt (first 800 chars): {prompt[:800]}...")
+
         # Prepare messages with images
         content = [{"type": "text", "text": prompt}]
 
@@ -129,11 +132,17 @@ class UnifiedVLMClient:
                 logger.error("LiteLLM returned None content for step extraction")
                 return [{"error": "LiteLLM returned None content"}]
 
+            # DEBUG: Log raw response to check if bbox is present
+            logger.debug(f"VLM raw response preview: {result_text[:500]}...")
+
             # Parse JSON response
             result = self._parse_response(result_text, use_json_mode)
 
             # Normalize to array format
             normalized_result = self._normalize_to_array(result)
+
+            # Validate bbox presence and add defaults if missing
+            normalized_result = self._ensure_bbox_fields(normalized_result)
 
             # Cache result
             self.cache.set(self.model, cache_key, normalized_result, image_paths)
@@ -222,6 +231,9 @@ class UnifiedVLMClient:
             result = self._parse_response(result_text, use_json_mode=True)
             normalized_result = self._normalize_to_array(result)
 
+            # Validate bbox presence and add defaults if missing
+            normalized_result = self._ensure_bbox_fields(normalized_result)
+
             # Cache result
             self.cache.set(self.model, cache_key, normalized_result, image_paths)
 
@@ -249,7 +261,7 @@ class UnifiedVLMClient:
         "shape": "brick type and dimensions",
         "part_id": "LEGO part ID if visible",
         "quantity": <number>,
-        "bbox": [x1, y1, x2, y2] or null (bounding box in pixels if part is visible, null if not visible)
+        "bbox": [x1, y1, x2, y2]
       }}
     ],
     "existing_assembly": "description of already assembled parts shown",
@@ -274,20 +286,35 @@ class UnifiedVLMClient:
   }}
 ]
 
-INSTRUCTIONS:
+CRITICAL INSTRUCTIONS:
 1. Look carefully - the page may show 1, 2, or more steps
 2. Each step typically has a step number visible in the image
 3. Return ALL steps as an array, even if there's only one
 4. Keep descriptions concise (max 10-15 words per field)
 5. Return ONLY the JSON array, no additional text
-6. For each part in parts_required, provide bbox coordinates [x1, y1, x2, y2] where:
-   - x1, y1 = top-left corner pixel coordinates
-   - x2, y2 = bottom-right corner pixel coordinates
-   - If part is visible in the image, estimate bbox as accurately as possible
-   - If part is NOT visible or is just a reference, set bbox to null
 
-If only ONE step exists on the page, return an array with one element: [{{...}}]
-If TWO steps exist, return an array with two elements: [{{...}}, {{...}}]"""
+BOUNDING BOX INSTRUCTIONS (MANDATORY):
+6. For EVERY part in parts_required, you MUST provide bbox coordinates in PIXEL format:
+   "bbox": [x1, y1, x2, y2]
+
+   WHERE:
+   - x1, y1 = top-left corner (pixel coordinates)
+   - x2, y2 = bottom-right corner (pixel coordinates)
+   - Use the actual pixel coordinates from the image
+
+   EXAMPLES:
+   - A small part at top-left: "bbox": [50, 50, 150, 150]
+   - A part in the center: "bbox": [400, 300, 600, 500]
+   - A large part: "bbox": [100, 100, 800, 600]
+
+   IMPORTANT:
+   - NEVER omit the bbox field - it is REQUIRED for every part
+   - If you cannot see the part clearly, estimate the bounding box
+   - Always use integer pixel coordinates
+
+FORMAT EXAMPLES:
+- Single step: [{{"step_number": 1, "parts_required": [{{"bbox": [100, 150, 300, 400], ...}}], ...}}]
+- Two steps: [{{"step_number": 1, ...}}, {{"step_number": 2, ...}}]"""
 
         return prompt
 
@@ -332,6 +359,79 @@ If TWO steps exist, return an array with two elements: [{{...}}, {{...}}]"""
             return [result]
         else:
             return [{"error": "Invalid result format", "raw": str(result)}]
+
+    def _convert_box_2d_to_bbox(self, box_2d: List[int], image_width: int = None, image_height: int = None) -> List[int]:
+        """
+        Convert Gemini Robotics ER box_2d format to pixel bbox.
+
+        Gemini format: [y_min, x_min, y_max, x_max] in normalized coords (0-1000)
+        Output format: [x1, y1, x2, y2] in pixel coords
+
+        Args:
+            box_2d: Normalized coordinates [y_min, x_min, y_max, x_max]
+            image_width: Image width in pixels (if None, assumes 1000x1000)
+            image_height: Image height in pixels (if None, assumes 1000x1000)
+
+        Returns:
+            Pixel coordinates [x1, y1, x2, y2]
+        """
+        if not box_2d or len(box_2d) != 4:
+            return None
+
+        y_min, x_min, y_max, x_max = box_2d
+
+        # Use default dimensions if not provided
+        width = image_width or 1000
+        height = image_height or 1000
+
+        # Convert from normalized (0-1000) to pixels
+        x1 = int((x_min / 1000.0) * width)
+        y1 = int((y_min / 1000.0) * height)
+        x2 = int((x_max / 1000.0) * width)
+        y2 = int((y_max / 1000.0) * height)
+
+        return [x1, y1, x2, y2]
+
+    def _ensure_bbox_fields(self, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Ensure all parts have bbox fields.
+
+        Args:
+            results: List of step extraction results
+
+        Returns:
+            Updated results with bbox fields guaranteed for all parts
+        """
+        bbox_missing_count = 0
+        bbox_present_count = 0
+
+        for step in results:
+            if "parts_required" in step:
+                for part in step["parts_required"]:
+                    if "bbox" in part and part["bbox"]:
+                        # Validate bbox format
+                        if isinstance(part["bbox"], list) and len(part["bbox"]) == 4:
+                            bbox_present_count += 1
+                        else:
+                            logger.warning(f"Invalid bbox format: {part['bbox']}")
+                            part["bbox"] = None
+                            bbox_missing_count += 1
+                    else:
+                        # No bbox - add null placeholder
+                        part["bbox"] = None
+                        bbox_missing_count += 1
+
+        total_parts = bbox_missing_count + bbox_present_count
+        if total_parts > 0:
+            if bbox_missing_count > 0:
+                logger.warning(
+                    f"VLM did not provide bboxes for {bbox_missing_count}/{total_parts} parts "
+                    f"({bbox_missing_count/total_parts*100:.1f}%). SAM will use auto-segmentation fallback."
+                )
+            else:
+                logger.info(f"✓ VLM provided bboxes for all {bbox_present_count} parts")
+
+        return results
 
     def generate_text_description(
         self,

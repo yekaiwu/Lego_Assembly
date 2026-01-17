@@ -221,14 +221,15 @@ class PartAssociationModule:
             has_actions = len(step.get("actions", [])) > 0
             notes = step.get("notes") or ""
             is_cover = "cover" in notes.lower()
-            is_ad = any(keyword in notes.lower() 
+            is_ad = any(keyword in notes.lower()
                        for keyword in ["advertisement", "promotional", "lego.com", "visit"])
-            
+
             if (has_parts or has_actions) and not is_cover and not is_ad:
-                # This is a relevant build step page
-                if i < len(manual_pages):
-                    page_path = manual_pages[i]
-                    logger.debug(f"✓ Page {i+1}: Relevant (has parts or actions)")
+                # This is a relevant build step page - use actual source page
+                source_pages = step.get("_source_page_paths", [])
+                if source_pages:
+                    page_path = source_pages[0]
+                    logger.debug(f"✓ Step {i+1}: Relevant (has parts or actions), page: {page_path}")
                     relevant_pages.append(page_path)
             else:
                 # Log why page was filtered out
@@ -266,10 +267,13 @@ class PartAssociationModule:
         try:
             result = self._call_vlm_with_custom_prompt(
                 prompt=prompt,
-                image_paths=sample_pages[:6],
-                use_json_mode=True
+                image_paths=sample_pages[:6]
             )
-            
+
+            # Handle list return from extract_step_info_with_context
+            if isinstance(result, list) and len(result) > 0:
+                result = result[0]
+
             # Parse role assignments
             role_assignments = result.get("part_roles", [])
             
@@ -320,11 +324,16 @@ class PartAssociationModule:
             # Find the first step where this part appears
             first_appears_step = part.get("first_appears_step", 1)
 
-            # Get the page path for this step
-            if first_appears_step <= len(manual_pages):
-                page_idx = first_appears_step - 1  # Convert to 0-based index
-                page_path = manual_pages[page_idx]
+            # Find the actual page for this step from extracted_steps
+            page_path = None
+            for step in extracted_steps:
+                if step.get("step_number") == first_appears_step:
+                    source_pages = step.get("_source_page_paths", [])
+                    if source_pages:
+                        page_path = source_pages[0]
+                    break
 
+            if page_path:
                 # Generate a unique part ID for this part
                 part_id = f"{part['color']}_{part['shape']}".replace(" ", "_")
 
@@ -345,7 +354,7 @@ class PartAssociationModule:
                 else:
                     logger.debug(f"✗ Failed to extract image for {part['name']}")
             else:
-                logger.warning(f"Step {first_appears_step} out of range for part {part['name']}")
+                logger.warning(f"Could not find page for step {first_appears_step} for part {part['name']}")
 
             parts_with_images.append(part_copy)
 
@@ -402,9 +411,8 @@ class PartAssociationModule:
     def _call_vlm_with_custom_prompt(
         self,
         prompt: str,
-        image_paths: List[str],
-        use_json_mode: bool = True
-    ) -> Dict[str, Any]:
+        image_paths: List[str]
+    ) -> List[Dict[str, Any]]:
         """
         Provider-agnostic VLM call with custom prompt and images.
         Handles different API formats for Gemini, OpenAI, Claude, etc.
@@ -415,8 +423,8 @@ class PartAssociationModule:
         if hasattr(self.vlm_client, 'extract_step_info_with_context'):
             return self.vlm_client.extract_step_info_with_context(
                 image_paths=image_paths,
-                custom_prompt=prompt,
-                use_json_mode=use_json_mode
+                step_number=None,
+                custom_prompt=prompt
             )
 
         # Fallback: use extract_step_info with step_number=None
@@ -426,7 +434,7 @@ class PartAssociationModule:
             return self.vlm_client.extract_step_info(
                 image_paths=image_paths,
                 step_number=None,
-                use_json_mode=use_json_mode
+                use_json_mode=True
             )
 
         else:

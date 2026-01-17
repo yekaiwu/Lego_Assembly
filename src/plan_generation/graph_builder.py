@@ -62,13 +62,17 @@ class SubassemblyDetector:
             # Get parts from this step
             parts_in_step = step.get("parts_required", [])
 
+            # Get the actual source page for this step (not by index)
+            source_pages = step.get("_source_page_paths", [])
+            manual_page = source_pages[0] if source_pages else None
+
             # Every step creates a new subassembly node
             subassembly = self._create_subassembly_for_step(
                 step=step,
                 step_number=step_number,
                 parts=parts_in_step,
                 previous_subassembly=previous_step_subassembly,
-                manual_page=manual_pages[step_idx] if step_idx < len(manual_pages) else None,
+                manual_page=manual_page,
                 assembly_id=assembly_id,
                 component_extractor=component_extractor
             )

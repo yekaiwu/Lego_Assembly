@@ -268,7 +268,8 @@ IMPORTANT: This page may contain ONE or MORE assembly steps. Analyze carefully a
         "color": "color name",
         "shape": "brick type and dimensions",
         "part_id": "LEGO part ID if visible",
-        "quantity": <number>
+        "quantity": <number>,
+        "bbox": [x1, y1, x2, y2]
       }}
     ],
     "existing_assembly": "description of already assembled parts shown",
@@ -308,6 +309,20 @@ IMPORTANT INSTRUCTIONS:
 4. If a step references previous work, identify which step in "context_references"
 5. Determine if each step starts a new subassembly or continues the current one
 6. Focus on what's NEW in each step, not what was already built
+
+BOUNDING BOX INSTRUCTIONS (MANDATORY):
+7. For EVERY part in parts_required, you MUST provide bbox coordinates in PIXEL format:
+   "bbox": [x1, y1, x2, y2]
+
+   WHERE:
+   - x1, y1 = top-left corner (pixel coordinates)
+   - x2, y2 = bottom-right corner (pixel coordinates)
+   - Use the actual pixel coordinates from the image
+
+   IMPORTANT:
+   - NEVER omit the bbox field - it is REQUIRED for every part
+   - If you cannot see the part clearly, estimate the bounding box
+   - Always use integer pixel coordinates
 
 RESPONSE CONSTRAINTS (CRITICAL):
 - Keep descriptions CONCISE (max 10-15 words per field)

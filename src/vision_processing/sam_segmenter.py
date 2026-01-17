@@ -44,7 +44,7 @@ class SAMSegmenter:
         model_name: str = "sam2_b.pt",
         confidence_threshold: float = 0.5,
         device: str = "cpu",
-        inference_timeout: int = 60
+        inference_timeout: int = 300
     ):
         """
         Initialize SAM segmenter.
@@ -53,7 +53,7 @@ class SAMSegmenter:
             model_name: SAM model variant (sam2_b, sam2_l, sam2_s, sam2_t)
             confidence_threshold: Minimum confidence for detections (0.0 to 1.0)
             device: Device to run model on ('cpu', 'cuda', 'mps')
-            inference_timeout: Maximum seconds to wait for inference (default: 60)
+            inference_timeout: Maximum seconds to wait for inference (default: 300)
         """
         self.model_name = model_name
         self.confidence_threshold = confidence_threshold
@@ -135,17 +135,23 @@ class SAMSegmenter:
                 return self.model(image_path, conf=self.confidence_threshold)
 
         # Run inference with timeout
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(_inference)
-            try:
-                results = future.result(timeout=self.inference_timeout)
-                return results
-            except FuturesTimeoutError:
-                logger.error(
-                    f"SAM inference timeout ({self.inference_timeout}s) for {image_path}. "
-                    f"Consider using device='cpu' or increasing timeout."
-                )
-                raise TimeoutError(f"SAM inference exceeded {self.inference_timeout}s timeout")
+        executor = ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(_inference)
+        try:
+            results = future.result(timeout=self.inference_timeout)
+            executor.shutdown(wait=True)
+            return results
+        except FuturesTimeoutError:
+            # Cancel the future and shutdown without waiting
+            # Note: The background thread may still run, but we don't wait for it
+            future.cancel()
+            executor.shutdown(wait=False)
+            logger.error(
+                f"SAM inference timeout ({self.inference_timeout}s) for {image_path}. "
+                f"Consider using device='cpu' or increasing timeout. "
+                f"Background inference may still be running."
+            )
+            raise TimeoutError(f"SAM inference exceeded {self.inference_timeout}s timeout")
 
     def segment_page(
         self,
@@ -521,6 +527,7 @@ def create_sam_segmenter_from_env() -> Optional[SAMSegmenter]:
         model_name = f"{model_name}.pt"
 
     confidence_threshold = float(os.getenv("SAM_CONFIDENCE_THRESHOLD", "0.5"))
+    inference_timeout = int(os.getenv("SAM_INFERENCE_TIMEOUT", "300"))
 
     # Detect device
     try:
@@ -534,12 +541,13 @@ def create_sam_segmenter_from_env() -> Optional[SAMSegmenter]:
     except ImportError:
         device = "cpu"
 
-    logger.info(f"Creating SAM segmenter: model={model_name}, device={device}")
+    logger.info(f"Creating SAM segmenter: model={model_name}, device={device}, timeout={inference_timeout}s")
 
     return SAMSegmenter(
         model_name=model_name,
         confidence_threshold=confidence_threshold,
-        device=device
+        device=device,
+        inference_timeout=inference_timeout
     )
 
 
