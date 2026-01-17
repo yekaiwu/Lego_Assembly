@@ -29,11 +29,19 @@ class SubassemblyDetector:
         extracted_steps: List[Dict[str, Any]],
         part_catalog: Dict[str, Any],
         manual_pages: List[str],
-        assembly_id: str
+        assembly_id: str,
+        component_extractor=None
     ) -> List[Dict[str, Any]]:
         """
         Detect subassemblies across all steps.
         UPDATED: Every step now creates a new subassembly node for step-by-step progression.
+
+        Args:
+            extracted_steps: Previously extracted step data
+            part_catalog: Part catalog dictionary
+            manual_pages: List of paths to manual page images
+            assembly_id: Assembly identifier
+            component_extractor: Optional ComponentExtractor for extracting subassembly images
 
         Returns:
             List of subassembly definitions
@@ -54,14 +62,19 @@ class SubassemblyDetector:
             # Get parts from this step
             parts_in_step = step.get("parts_required", [])
 
+            # Get the actual source page for this step (not by index)
+            source_pages = step.get("_source_page_paths", [])
+            manual_page = source_pages[0] if source_pages else None
+
             # Every step creates a new subassembly node
             subassembly = self._create_subassembly_for_step(
                 step=step,
                 step_number=step_number,
                 parts=parts_in_step,
                 previous_subassembly=previous_step_subassembly,
-                manual_page=manual_pages[step_idx] if step_idx < len(manual_pages) else None,
-                assembly_id=assembly_id
+                manual_page=manual_page,
+                assembly_id=assembly_id,
+                component_extractor=component_extractor
             )
 
             if subassembly:
@@ -85,7 +98,8 @@ class SubassemblyDetector:
         parts: List[Dict[str, Any]],
         previous_subassembly: Optional[str],
         manual_page: Optional[str],
-        assembly_id: str
+        assembly_id: str,
+        component_extractor=None
     ) -> Dict[str, Any]:
         """
         Create a subassembly node for this step.
@@ -151,6 +165,23 @@ class SubassemblyDetector:
                 "spatial_signature": self._extract_spatial_signature(step)
             }
         }
+
+        # Extract subassembly image (if SAM is enabled)
+        if component_extractor and component_extractor.is_enabled() and manual_page:
+            subasm_id = f"step_{step_number}"
+
+            # Try to get bbox hint from VLM extraction
+            bbox_hint = self._get_assembled_result_bbox(step)
+
+            image_path = component_extractor.extract_subassembly_image(
+                subassembly_id=subasm_id,
+                page_path=manual_page,
+                bbox_hint=bbox_hint,
+                subassembly_data=subassembly
+            )
+            if image_path:
+                subassembly["image_path"] = image_path
+                logger.debug(f"✓ Extracted subassembly image for step {step_number}: {image_path}")
 
         return subassembly
 
@@ -270,6 +301,30 @@ class SubassemblyDetector:
 
         return "standard arrangement"
 
+    def _get_assembled_result_bbox(self, step: Dict[str, Any]) -> Optional[Tuple[int, int, int, int]]:
+        """
+        Extract assembled result bounding box from VLM step data.
+
+        Args:
+            step: Step dictionary from VLM extraction
+
+        Returns:
+            Bounding box (x1, y1, x2, y2) or None if not found
+        """
+        bbox = step.get("assembled_result_bbox")
+
+        if bbox and isinstance(bbox, list) and len(bbox) == 4:
+            # Validate bbox values
+            x1, y1, x2, y2 = bbox
+            if all(isinstance(v, (int, float)) for v in bbox) and x2 > x1 and y2 > y1:
+                logger.debug(f"Found assembled result bbox for step {step.get('step_number')}: {bbox}")
+                return tuple(int(v) for v in bbox)
+            else:
+                logger.warning(f"Invalid assembled result bbox for step {step.get('step_number')}: {bbox}")
+
+        logger.debug(f"No assembled result bbox found for step {step.get('step_number')}, SAM will use auto-segmentation")
+        return None
+
 
 class StepStateTracker:
     """Tracks assembly state at each step."""
@@ -388,16 +443,18 @@ class GraphBuilder:
         self,
         extracted_steps: List[Dict[str, Any]],
         assembly_id: str,
-        image_dir: Path
+        image_dir: Path,
+        component_extractor=None
     ) -> Dict[str, Any]:
         """
         Build complete hierarchical graph.
-        
+
         Args:
             extracted_steps: Previously extracted step data
             assembly_id: Assembly identifier
             image_dir: Directory with manual page images
-        
+            component_extractor: Optional ComponentExtractor for extracting component images
+
         Returns:
             Complete hierarchical graph structure
         """
@@ -405,26 +462,28 @@ class GraphBuilder:
         logger.info("Building Hierarchical Assembly Graph")
         logger.info(f"Assembly ID: {assembly_id}")
         logger.info("=" * 60)
-        
+
         # Get manual pages
         manual_pages = sorted(list(image_dir.glob("page_*.png")))
         logger.info(f"Found {len(manual_pages)} manual pages")
-        
+
         # Stage 1: Part Association
         logger.info("\n[Stage 1/2] Part Association & Role Assignment")
         part_catalog = self.part_association.build_part_catalog(
             extracted_steps=extracted_steps,
             manual_pages=[str(p) for p in manual_pages],
-            assembly_id=assembly_id
+            assembly_id=assembly_id,
+            component_extractor=component_extractor
         )
-        
+
         # Stage 2: Subassembly Detection
         logger.info("\n[Stage 2/2] Subassembly Identification")
         subassemblies = self.subassembly_detector.detect_subassemblies(
             extracted_steps=extracted_steps,
             part_catalog=part_catalog,
             manual_pages=[str(p) for p in manual_pages],
-            assembly_id=assembly_id
+            assembly_id=assembly_id,
+            component_extractor=component_extractor
         )
         
         # Build graph structure
@@ -504,7 +563,8 @@ class GraphBuilder:
                 "children": [],
                 "parents": [],
                 "step_created": part_data.get("first_appears_step", 1),
-                "layer": None  # Will be set later
+                "layer": None,  # Will be set later
+                "image_path": part_data.get("image_path")  # Path to extracted part image
             }
             nodes.append(part_node)
         
@@ -519,7 +579,8 @@ class GraphBuilder:
                 "parents": [],
                 "step_created": subasm["created_in_step"],
                 "layer": None,  # Will be set later
-                "completeness_markers": subasm.get("completeness_markers", {})
+                "completeness_markers": subasm.get("completeness_markers", {}),
+                "image_path": subasm.get("image_path")  # Path to extracted subassembly image
             }
             nodes.append(subasm_node)
         

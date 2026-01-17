@@ -463,7 +463,7 @@ export default function ChatInterface() {
           value={input}
           onChange={(e) => setInput(e.target.value)}
           placeholder={uploadedImages.length > 0 ? "Ask about your assembly photos..." : "Ask about your LEGO build..."}
-          className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-lego-blue focus:border-lego-blue"
+          className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-lego-blue focus:border-lego-blue text-gray-900 bg-white"
           disabled={queryMutation.isPending || uploadImagesMutation.isPending}
         />
         <button

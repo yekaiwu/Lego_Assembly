@@ -19,6 +19,7 @@ from src.vision_processing.document_analyzer import (
     extract_relevant_pages
 )
 from src.plan_generation import PlanStructureGenerator, GraphBuilder
+from src.plan_generation.component_extractor import create_component_extractor
 from src.utils import get_config, URLHandler
 
 # Import backend services for Phase 2
@@ -367,6 +368,18 @@ def main(
     # Step 5: Hierarchical Assembly Graph Construction (Phase 2 - Already Implemented)
     if not checkpoint.is_step_complete("hierarchical_graph"):
         logger.info("Step 5/7: Building hierarchical assembly graph (Phase 2)...")
+
+        # Create component extractor for SAM-based image extraction
+        component_extractor = create_component_extractor(
+            output_dir=str(output_dir),
+            manual_id=assembly_id
+        )
+
+        if component_extractor.is_enabled():
+            logger.info("SAM component extraction: ENABLED")
+        else:
+            logger.info("SAM component extraction: DISABLED")
+
         graph_builder = GraphBuilder(
             enable_spatial_relationships=enable_spatial_relationships
         )
@@ -374,12 +387,19 @@ def main(
         hierarchical_graph = graph_builder.build_graph(
             extracted_steps=extracted_steps,
             assembly_id=assembly_id,
-            image_dir=output_dir / "temp_pages"
+            image_dir=output_dir / "temp_pages",
+            component_extractor=component_extractor
         )
 
         # Save hierarchical graph
         hierarchical_graph_path = output_dir / f"{assembly_id}_graph.json"
         graph_builder.save_graph(hierarchical_graph, hierarchical_graph_path)
+
+        # Log extraction summary
+        if component_extractor.is_enabled():
+            summary = component_extractor.get_extraction_summary()
+            logger.info(f"Component extraction: {summary['total_parts']} parts, "
+                        f"{summary['total_subassemblies']} subassemblies extracted")
 
         logger.info(f"Hierarchical graph: {hierarchical_graph['metadata']['total_parts']} parts, "
                     f"{hierarchical_graph['metadata']['total_subassemblies']} subassemblies")

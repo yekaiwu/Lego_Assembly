@@ -14,6 +14,7 @@ Get the complete Vision-Enhanced RAG system running in 10 minutes.
 - ✅ 🧠 **Hierarchical assembly graph** (parts → subassemblies → model)
 - ✅ **Graph-enhanced retrieval** for structural queries
 - ✅ **Subassembly detection** from user photos
+- ✅ 🖼️ **SAM Component Extraction** - Automatic segmentation and extraction of part/subassembly images
 
 ---
 
@@ -72,6 +73,12 @@ RAG_LLM_MODEL=deepseek-chat
 MOONSHOT_API_KEY=sk-your-key-here
 RAG_LLM_PROVIDER=moonshot
 RAG_LLM_MODEL=moonshot-v1-32k
+
+# SAM (Segment Anything Model) Settings - Optional
+ENABLE_SAM=true                    # Set to false to disable component extraction
+SAM_MODEL=sam2_b                   # sam2_b (recommended), sam2_l, sam2_s, sam2_t
+SAM_CONFIDENCE_THRESHOLD=0.5       # Detection confidence (0.0 to 1.0)
+COMPONENTS_DIR=components          # Output directory for component images
 ```
 
 ### Step 2: Install Dependencies
@@ -105,6 +112,9 @@ uv run python main.py https://www.lego.com/cdn/product-assets/product.bi.core.pd
 #   - 6454922_graph.json          (Hierarchical assembly graph - enhanced)
 #   - 6454922_plan.txt            (Human-readable plan)
 #   - temp_pages/*.png            (Step diagram images)
+#   - components/                 (Extracted component images - if SAM enabled)
+#       - part_*.png              (Individual part images)
+#       - subasm_*.png            (Subassembly images)
 #   - .6454922_checkpoint.json    (Progress checkpoint - hidden)
 ```
 
