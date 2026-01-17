@@ -473,6 +473,7 @@ class SAMSegmenter:
 
         # If bbox hint provided, use it directly
         if bbox_hint:
+            logger.info(f"Extracting subassembly {subassembly_id} using VLM bbox hint: {bbox_hint}")
             component = self.extract_component(
                 image_path=page_path,
                 bbox=bbox_hint,
@@ -480,22 +481,42 @@ class SAMSegmenter:
             )
             return output_path if component else None
 
-        # Otherwise, segment the page and use the largest segment
-        segments = self.segment_page(page_path)
-
-        if not segments:
-            logger.warning(f"No segments found for subassembly {subassembly_id} in {page_path}")
-            return None
-
-        # Use the largest segment as the subassembly
-        # (Subassemblies are typically larger than individual parts)
-        component = self.extract_component(
-            image_path=page_path,
-            segment_data=segments[0],
-            output_path=output_path
+        # No bbox hint - try heuristic approach instead of auto-segmentation
+        # Auto-segmentation can timeout on complex pages (300s+)
+        logger.warning(
+            f"No VLM bbox for subassembly {subassembly_id}, using heuristic fallback. "
+            f"Consider re-running extraction to get assembled_result_bbox from VLM."
         )
 
-        return output_path if component else None
+        # Heuristic: LEGO manuals typically show assembled result on right side
+        # Use right 60% of image as a fallback bbox
+        try:
+            from PIL import Image
+            image = Image.open(page_path)
+            width, height = image.size
+
+            # Right 60% of the image (typical location of assembled result)
+            heuristic_bbox = (
+                int(width * 0.4),  # x1: start at 40% from left
+                int(height * 0.1),  # y1: skip top 10% (often has step numbers)
+                width - 10,  # x2: almost full width (leave small margin)
+                height - 10  # y2: almost full height (leave small margin)
+            )
+
+            logger.info(f"Using heuristic bbox for subassembly {subassembly_id}: {heuristic_bbox}")
+
+            component = self.extract_component(
+                image_path=page_path,
+                bbox=heuristic_bbox,
+                output_path=output_path,
+                padding=0  # No padding since we already have margins
+            )
+
+            return output_path if component else None
+
+        except Exception as e:
+            logger.error(f"Heuristic extraction failed for {subassembly_id}: {e}")
+            return None
 
 
 def create_sam_segmenter_from_env() -> Optional[SAMSegmenter]:

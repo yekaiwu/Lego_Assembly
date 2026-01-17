@@ -73,6 +73,9 @@ class UnifiedVLMClient:
             logger.debug(f"Cache hit for {self.model}")
             return cached
 
+        # Get image dimensions for bbox conversion
+        image_width, image_height = self._get_image_dimensions(image_paths[0] if image_paths else None)
+
         # Build prompt
         prompt = self._build_extraction_prompt(step_number, use_json_mode)
 
@@ -144,6 +147,9 @@ class UnifiedVLMClient:
             # Validate bbox presence and add defaults if missing
             normalized_result = self._ensure_bbox_fields(normalized_result)
 
+            # Convert bboxes from Gemini normalized format to pixel coordinates
+            normalized_result = self._convert_bboxes_to_pixels(normalized_result, image_width, image_height)
+
             # Cache result
             self.cache.set(self.model, cache_key, normalized_result, image_paths)
 
@@ -152,6 +158,28 @@ class UnifiedVLMClient:
         except Exception as e:
             logger.error(f"LiteLLM API call failed: {e}")
             return [{"error": str(e)}]
+
+    def _get_image_dimensions(self, image_path: Optional[str]) -> tuple:
+        """
+        Get image dimensions for bbox conversion.
+
+        Args:
+            image_path: Path to image file
+
+        Returns:
+            Tuple of (width, height) in pixels. Returns (1000, 1000) as default if image not found.
+        """
+        if not image_path:
+            logger.warning("No image path provided for dimension detection, using default 1000x1000")
+            return (1000, 1000)
+
+        try:
+            from PIL import Image
+            img = Image.open(image_path)
+            return img.size  # Returns (width, height)
+        except Exception as e:
+            logger.warning(f"Could not read image dimensions from {image_path}: {e}. Using default 1000x1000")
+            return (1000, 1000)
 
     def extract_step_info_with_context(
         self,
@@ -178,6 +206,9 @@ class UnifiedVLMClient:
         cached = self.cache.get(self.model, cache_key, image_paths)
         if cached:
             return cached
+
+        # Get image dimensions for bbox conversion
+        image_width, image_height = self._get_image_dimensions(image_paths[0] if image_paths else None)
 
         # Prepare messages with images
         content = [{"type": "text", "text": custom_prompt}]
@@ -234,6 +265,9 @@ class UnifiedVLMClient:
             # Validate bbox presence and add defaults if missing
             normalized_result = self._ensure_bbox_fields(normalized_result)
 
+            # Convert bboxes from Gemini normalized format to pixel coordinates
+            normalized_result = self._convert_bboxes_to_pixels(normalized_result, image_width, image_height)
+
             # Cache result
             self.cache.set(self.model, cache_key, normalized_result, image_paths)
 
@@ -261,7 +295,7 @@ class UnifiedVLMClient:
         "shape": "brick type and dimensions",
         "part_id": "LEGO part ID if visible",
         "quantity": <number>,
-        "bbox": [x1, y1, x2, y2]
+        "bbox": [y_min, x_min, y_max, x_max]
       }}
     ],
     "existing_assembly": "description of already assembled parts shown",
@@ -294,23 +328,25 @@ CRITICAL INSTRUCTIONS:
 5. Return ONLY the JSON array, no additional text
 
 BOUNDING BOX INSTRUCTIONS (MANDATORY):
-6. For EVERY part in parts_required, you MUST provide bbox coordinates in PIXEL format:
-   "bbox": [x1, y1, x2, y2]
+6. For EVERY part in parts_required, you MUST provide bbox coordinates in NORMALIZED format:
+   "bbox": [y_min, x_min, y_max, x_max]
 
    WHERE:
-   - x1, y1 = top-left corner (pixel coordinates)
-   - x2, y2 = bottom-right corner (pixel coordinates)
-   - Use the actual pixel coordinates from the image
+   - Coordinates are NORMALIZED from 0 to 1000
+   - y_min, x_min = top-left corner (normalized coordinates)
+   - y_max, x_max = bottom-right corner (normalized coordinates)
+   - 0 represents the top/left edge, 1000 represents the bottom/right edge
 
    EXAMPLES:
-   - A small part at top-left: "bbox": [50, 50, 150, 150]
-   - A part in the center: "bbox": [400, 300, 600, 500]
-   - A large part: "bbox": [100, 100, 800, 600]
+   - Top-left corner part: "bbox": [50, 50, 200, 200]
+   - Center part: "bbox": [400, 400, 600, 600]
+   - Bottom-right part: "bbox": [800, 800, 1000, 1000]
 
    IMPORTANT:
    - NEVER omit the bbox field - it is REQUIRED for every part
    - If you cannot see the part clearly, estimate the bounding box
-   - Always use integer pixel coordinates
+   - Always use normalized coordinates in the range 0-1000
+   - Format is [y_min, x_min, y_max, x_max] NOT [x1, y1, x2, y2]
 
 FORMAT EXAMPLES:
 - Single step: [{{"step_number": 1, "parts_required": [{{"bbox": [100, 150, 300, 400], ...}}], ...}}]
@@ -391,6 +427,54 @@ FORMAT EXAMPLES:
         y2 = int((y_max / 1000.0) * height)
 
         return [x1, y1, x2, y2]
+
+    def _convert_bboxes_to_pixels(
+        self,
+        results: List[Dict[str, Any]],
+        image_width: int,
+        image_height: int
+    ) -> List[Dict[str, Any]]:
+        """
+        Convert all bboxes from Gemini Robotics ER normalized format to pixel coordinates.
+
+        Gemini format: [y_min, x_min, y_max, x_max] (0-1000 normalized)
+        Output format: [x1, y1, x2, y2] (pixel coordinates)
+
+        Args:
+            results: List of step extraction results
+            image_width: Image width in pixels
+            image_height: Image height in pixels
+
+        Returns:
+            Updated results with bboxes converted to pixel coordinates
+        """
+        converted_count = 0
+
+        for step in results:
+            # Convert parts_required bboxes
+            if "parts_required" in step:
+                for part in step["parts_required"]:
+                    if "bbox" in part and part["bbox"]:
+                        original_bbox = part["bbox"]
+                        pixel_bbox = self._convert_box_2d_to_bbox(original_bbox, image_width, image_height)
+                        if pixel_bbox:
+                            part["bbox"] = pixel_bbox
+                            converted_count += 1
+                            logger.debug(f"Converted part bbox: {original_bbox} → {pixel_bbox}")
+
+            # Convert assembled_result_bbox
+            if "assembled_result_bbox" in step and step["assembled_result_bbox"]:
+                original_bbox = step["assembled_result_bbox"]
+                pixel_bbox = self._convert_box_2d_to_bbox(original_bbox, image_width, image_height)
+                if pixel_bbox:
+                    step["assembled_result_bbox"] = pixel_bbox
+                    converted_count += 1
+                    logger.debug(f"Converted assembled bbox: {original_bbox} → {pixel_bbox}")
+
+        if converted_count > 0:
+            logger.info(f"✓ Converted {converted_count} bboxes from normalized (0-1000) to pixel coordinates")
+
+        return results
 
     def _ensure_bbox_fields(self, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """

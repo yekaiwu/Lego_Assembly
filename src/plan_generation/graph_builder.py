@@ -169,9 +169,14 @@ class SubassemblyDetector:
         # Extract subassembly image (if SAM is enabled)
         if component_extractor and component_extractor.is_enabled() and manual_page:
             subasm_id = f"step_{step_number}"
+
+            # Try to get bbox hint from VLM extraction
+            bbox_hint = self._get_assembled_result_bbox(step)
+
             image_path = component_extractor.extract_subassembly_image(
                 subassembly_id=subasm_id,
                 page_path=manual_page,
+                bbox_hint=bbox_hint,
                 subassembly_data=subassembly
             )
             if image_path:
@@ -295,6 +300,30 @@ class SubassemblyDetector:
             return orientation
 
         return "standard arrangement"
+
+    def _get_assembled_result_bbox(self, step: Dict[str, Any]) -> Optional[Tuple[int, int, int, int]]:
+        """
+        Extract assembled result bounding box from VLM step data.
+
+        Args:
+            step: Step dictionary from VLM extraction
+
+        Returns:
+            Bounding box (x1, y1, x2, y2) or None if not found
+        """
+        bbox = step.get("assembled_result_bbox")
+
+        if bbox and isinstance(bbox, list) and len(bbox) == 4:
+            # Validate bbox values
+            x1, y1, x2, y2 = bbox
+            if all(isinstance(v, (int, float)) for v in bbox) and x2 > x1 and y2 > y1:
+                logger.debug(f"Found assembled result bbox for step {step.get('step_number')}: {bbox}")
+                return tuple(int(v) for v in bbox)
+            else:
+                logger.warning(f"Invalid assembled result bbox for step {step.get('step_number')}: {bbox}")
+
+        logger.debug(f"No assembled result bbox found for step {step.get('step_number')}, SAM will use auto-segmentation")
+        return None
 
 
 class StepStateTracker:
