@@ -343,6 +343,14 @@ BOUNDING BOX INSTRUCTIONS (MANDATORY):
 7. For EVERY part in parts_required, you MUST provide bbox coordinates in NORMALIZED format:
    "bbox": [y_min, x_min, y_max, x_max]
 
+   CRITICAL - WHAT TO DRAW THE BBOX AROUND:
+   - Draw bbox around the PART ICON/IMAGE in the parts inventory callout box
+   - The parts inventory is typically shown in small boxes with quantity (e.g., "1x", "2x")
+   - Focus on the VISUAL REPRESENTATION of the part itself (the brick/piece image)
+   - DO NOT include text labels, quantity numbers, or callout box borders
+   - The bbox should TIGHTLY fit the part illustration/icon
+   - If a part appears in multiple places, target the INVENTORY/CALLOUT version (not the assembled version)
+
    WHERE:
    - Coordinates are NORMALIZED from 0 to 1000
    - y_min, x_min = top-left corner (normalized coordinates)
@@ -350,14 +358,18 @@ BOUNDING BOX INSTRUCTIONS (MANDATORY):
    - 0 represents the top/left edge, 1000 represents the bottom/right edge
 
    EXAMPLES:
-   - Top-left part: "bbox": [50, 50, 200, 200]
-   - Center part: "bbox": [400, 400, 600, 600]
+   - Part icon in top-right callout: "bbox": [50, 700, 150, 900]
+   - Part icon in left callout: "bbox": [200, 100, 350, 250]
+   - Center part icon: "bbox": [400, 400, 500, 500]
 
-   IMPORTANT:
-   - NEVER omit the bbox field - it is REQUIRED for every part
-   - If you cannot see the part clearly, estimate the bounding box
+   CRITICAL REQUIREMENTS (MANDATORY):
+   - EVERY SINGLE PART in parts_required MUST have a bbox field
+   - If you list a part, you MUST provide its bbox - NO EXCEPTIONS
+   - Draw bbox TIGHTLY around each part icon (not the entire callout box)
+   - When multiple parts share a callout box, draw SEPARATE bboxes for EACH part
    - Always use normalized coordinates in the range 0-1000
    - Format is [y_min, x_min, y_max, x_max] NOT [x1, y1, x2, y2]
+   - VALIDATION: Number of bboxes MUST equal number of parts
 
 8. For assembled_result_bbox, provide the bounding box of the FINAL ASSEMBLED RESULT shown in this step:
    - This is the assembled/completed state after adding the new parts

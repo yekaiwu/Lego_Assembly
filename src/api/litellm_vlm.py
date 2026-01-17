@@ -85,16 +85,45 @@ class UnifiedVLMClient:
         # Prepare messages with images
         content = [{"type": "text", "text": prompt}]
 
-        # Add images
+        # Add images (resize to Gemini's dimensions for accurate bboxes)
         for img_path in image_paths:
-            # Read and encode image
             import base64
             from pathlib import Path
+            from PIL import Image
+            import io
 
             path = Path(img_path)
             if not path.exists():
                 logger.error(f"Image not found: {img_path}")
                 continue
+
+            # Load image
+            img = Image.open(img_path)
+            orig_width, orig_height = img.size
+
+            # Resize to match Gemini's internal dimensions (1280x720 max, maintaining aspect ratio)
+            max_width = 1280
+            max_height = 720
+
+            # Calculate aspect ratio
+            aspect_ratio = orig_width / orig_height
+
+            # Determine target dimensions
+            if orig_width > max_width or orig_height > max_height:
+                if aspect_ratio > (max_width / max_height):
+                    # Width is limiting
+                    target_width = max_width
+                    target_height = int(max_width / aspect_ratio)
+                else:
+                    # Height is limiting
+                    target_height = max_height
+                    target_width = int(max_height * aspect_ratio)
+
+                # Resize image
+                img = img.resize((target_width, target_height), Image.Resampling.LANCZOS)
+                logger.debug(f"Resized image from {orig_width}x{orig_height} to {target_width}x{target_height} to match Gemini dimensions")
+            else:
+                logger.debug(f"Image {orig_width}x{orig_height} already fits within Gemini max size")
 
             # Determine image format
             suffix = path.suffix.lower()
@@ -106,14 +135,16 @@ class UnifiedVLMClient:
                 '.gif': 'image/gif'
             }.get(suffix, 'image/png')
 
-            # Read and encode
-            with open(img_path, 'rb') as f:
-                image_data = base64.b64encode(f.read()).decode('utf-8')
+            # Save to bytes and encode
+            img_byte_arr = io.BytesIO()
+            img.save(img_byte_arr, format='PNG')
+            img_byte_arr = img_byte_arr.getvalue()
+            image_data = base64.b64encode(img_byte_arr).decode('utf-8')
 
             content.append({
                 "type": "image_url",
                 "image_url": {
-                    "url": f"data:{mime_type};base64,{image_data}"
+                    "url": f"data:image/png;base64,{image_data}"
                 }
             })
 
@@ -161,25 +192,59 @@ class UnifiedVLMClient:
 
     def _get_image_dimensions(self, image_path: Optional[str]) -> tuple:
         """
-        Get image dimensions for bbox conversion.
+        Get image dimensions that Gemini API uses for bbox conversion.
+
+        IMPORTANT: The Gemini API resizes images internally. The bboxes it returns are
+        relative to the RESIZED dimensions, not the original image dimensions.
+
+        Based on testing, Gemini appears to resize images to fit within 1280x720 while
+        maintaining aspect ratio.
 
         Args:
             image_path: Path to image file
 
         Returns:
-            Tuple of (width, height) in pixels. Returns (1000, 1000) as default if image not found.
+            Tuple of (width, height) that Gemini uses for bboxes
         """
         if not image_path:
-            logger.warning("No image path provided for dimension detection, using default 1000x1000")
-            return (1000, 1000)
+            logger.warning("No image path provided for dimension detection, using Gemini default 1280x720")
+            return (1280, 720)
 
         try:
             from PIL import Image
             img = Image.open(image_path)
-            return img.size  # Returns (width, height)
+            orig_width, orig_height = img.size
+
+            # Gemini appears to resize images to fit within a max size while maintaining aspect ratio
+            # Based on empirical testing: max_width=1280, max_height=720
+            max_width = 1280
+            max_height = 720
+
+            # Calculate aspect ratio
+            aspect_ratio = orig_width / orig_height
+
+            # Determine Gemini's resized dimensions
+            if orig_width > max_width or orig_height > max_height:
+                # Image needs resizing
+                if aspect_ratio > (max_width / max_height):
+                    # Width is the limiting factor
+                    gemini_width = max_width
+                    gemini_height = int(max_width / aspect_ratio)
+                else:
+                    # Height is the limiting factor
+                    gemini_height = max_height
+                    gemini_width = int(max_height * aspect_ratio)
+
+                logger.debug(f"Image {orig_width}x{orig_height} -> Gemini resizes to {gemini_width}x{gemini_height}")
+                return (gemini_width, gemini_height)
+            else:
+                # Image fits within max size, no resizing
+                logger.debug(f"Image {orig_width}x{orig_height} fits within Gemini max size")
+                return (orig_width, orig_height)
+
         except Exception as e:
-            logger.warning(f"Could not read image dimensions from {image_path}: {e}. Using default 1000x1000")
-            return (1000, 1000)
+            logger.warning(f"Could not read image dimensions from {image_path}: {e}. Using Gemini default 1280x720")
+            return (1280, 720)
 
     def extract_step_info_with_context(
         self,
@@ -210,34 +275,58 @@ class UnifiedVLMClient:
         # Get image dimensions for bbox conversion
         image_width, image_height = self._get_image_dimensions(image_paths[0] if image_paths else None)
 
-        # Prepare messages with images
+        # Prepare messages with images (resize to Gemini's dimensions for accurate bboxes)
         content = [{"type": "text", "text": custom_prompt}]
 
         # Add images
         for img_path in image_paths:
             import base64
             from pathlib import Path
+            from PIL import Image
+            import io
 
             path = Path(img_path)
             if not path.exists():
                 continue
 
-            suffix = path.suffix.lower()
-            mime_type = {
-                '.png': 'image/png',
-                '.jpg': 'image/jpeg',
-                '.jpeg': 'image/jpeg',
-                '.webp': 'image/webp',
-                '.gif': 'image/gif'
-            }.get(suffix, 'image/png')
+            # Load image
+            img = Image.open(img_path)
+            orig_width, orig_height = img.size
 
-            with open(img_path, 'rb') as f:
-                image_data = base64.b64encode(f.read()).decode('utf-8')
+            # Resize to match Gemini's internal dimensions (1280x720 max, maintaining aspect ratio)
+            max_width = 1280
+            max_height = 720
+
+            # Calculate aspect ratio
+            aspect_ratio = orig_width / orig_height
+
+            # Determine target dimensions
+            if orig_width > max_width or orig_height > max_height:
+                if aspect_ratio > (max_width / max_height):
+                    # Width is limiting
+                    target_width = max_width
+                    target_height = int(max_width / aspect_ratio)
+                else:
+                    # Height is limiting
+                    target_height = max_height
+                    target_width = int(max_height * aspect_ratio)
+
+                # Resize image
+                img = img.resize((target_width, target_height), Image.Resampling.LANCZOS)
+                logger.debug(f"Resized image from {orig_width}x{orig_height} to {target_width}x{target_height} to match Gemini dimensions")
+            else:
+                logger.debug(f"Image {orig_width}x{orig_height} already fits within Gemini max size")
+
+            # Save to bytes and encode
+            img_byte_arr = io.BytesIO()
+            img.save(img_byte_arr, format='PNG')
+            img_byte_arr = img_byte_arr.getvalue()
+            image_data = base64.b64encode(img_byte_arr).decode('utf-8')
 
             content.append({
                 "type": "image_url",
                 "image_url": {
-                    "url": f"data:{mime_type};base64,{image_data}"
+                    "url": f"data:image/png;base64,{image_data}"
                 }
             })
 
@@ -331,6 +420,14 @@ BOUNDING BOX INSTRUCTIONS (MANDATORY):
 6. For EVERY part in parts_required, you MUST provide bbox coordinates in NORMALIZED format:
    "bbox": [y_min, x_min, y_max, x_max]
 
+   CRITICAL - WHAT TO DRAW THE BBOX AROUND:
+   - Draw bbox around the PART ICON/IMAGE in the parts inventory callout box
+   - The parts inventory is typically shown in small boxes with quantity (e.g., "1x", "2x")
+   - Focus on the VISUAL REPRESENTATION of the part itself (the brick/piece image)
+   - DO NOT include text labels, quantity numbers, or callout box borders
+   - The bbox should TIGHTLY fit the part illustration/icon
+   - If a part appears in multiple places, target the INVENTORY/CALLOUT version (not the assembled version)
+
    WHERE:
    - Coordinates are NORMALIZED from 0 to 1000
    - y_min, x_min = top-left corner (normalized coordinates)
@@ -338,15 +435,18 @@ BOUNDING BOX INSTRUCTIONS (MANDATORY):
    - 0 represents the top/left edge, 1000 represents the bottom/right edge
 
    EXAMPLES:
-   - Top-left corner part: "bbox": [50, 50, 200, 200]
-   - Center part: "bbox": [400, 400, 600, 600]
-   - Bottom-right part: "bbox": [800, 800, 1000, 1000]
+   - Part icon in top-right callout: "bbox": [50, 700, 150, 900]
+   - Part icon in left callout: "bbox": [200, 100, 350, 250]
+   - Center part icon: "bbox": [400, 400, 500, 500]
 
-   IMPORTANT:
-   - NEVER omit the bbox field - it is REQUIRED for every part
-   - If you cannot see the part clearly, estimate the bounding box
+   CRITICAL REQUIREMENTS (MANDATORY):
+   - EVERY SINGLE PART in parts_required MUST have a bbox field
+   - If you list a part, you MUST provide its bbox - NO EXCEPTIONS
+   - Draw bbox TIGHTLY around each part icon (not the entire callout box)
+   - When multiple parts share a callout box, draw SEPARATE bboxes for EACH part
    - Always use normalized coordinates in the range 0-1000
    - Format is [y_min, x_min, y_max, x_max] NOT [x1, y1, x2, y2]
+   - VALIDATION: Number of bboxes MUST equal number of parts
 
 FORMAT EXAMPLES:
 - Single step: [{{"step_number": 1, "parts_required": [{{"bbox": [100, 150, 300, 400], ...}}], ...}}]
@@ -541,28 +641,48 @@ FORMAT EXAMPLES:
             logger.debug(f"Cache hit for description: {self.model}")
             return cached if isinstance(cached, str) else str(cached)
 
-        # Prepare message with image
+        # Prepare message with image (resize to Gemini's dimensions)
         import base64
         from pathlib import Path
+        from PIL import Image
+        import io
 
         path = Path(image_path)
         if not path.exists():
             logger.error(f"Image not found: {image_path}")
             return ""
 
-        # Determine image format
-        suffix = path.suffix.lower()
-        mime_type = {
-            '.png': 'image/png',
-            '.jpg': 'image/jpeg',
-            '.jpeg': 'image/jpeg',
-            '.webp': 'image/webp',
-            '.gif': 'image/gif'
-        }.get(suffix, 'image/png')
+        # Load and potentially resize image
+        img = Image.open(image_path)
+        orig_width, orig_height = img.size
 
-        # Read and encode
-        with open(image_path, 'rb') as f:
-            image_data = base64.b64encode(f.read()).decode('utf-8')
+        # Resize to match Gemini's internal dimensions (1280x720 max, maintaining aspect ratio)
+        max_width = 1280
+        max_height = 720
+
+        # Calculate aspect ratio
+        aspect_ratio = orig_width / orig_height
+
+        # Determine target dimensions
+        if orig_width > max_width or orig_height > max_height:
+            if aspect_ratio > (max_width / max_height):
+                # Width is limiting
+                target_width = max_width
+                target_height = int(max_width / aspect_ratio)
+            else:
+                # Height is limiting
+                target_height = max_height
+                target_width = int(max_height * aspect_ratio)
+
+            # Resize image
+            img = img.resize((target_width, target_height), Image.Resampling.LANCZOS)
+            logger.debug(f"Resized image from {orig_width}x{orig_height} to {target_width}x{target_height}")
+
+        # Save to bytes and encode
+        img_byte_arr = io.BytesIO()
+        img.save(img_byte_arr, format='PNG')
+        img_byte_arr = img_byte_arr.getvalue()
+        image_data = base64.b64encode(img_byte_arr).decode('utf-8')
 
         messages = [{
             "role": "user",
@@ -571,7 +691,7 @@ FORMAT EXAMPLES:
                 {
                     "type": "image_url",
                     "image_url": {
-                        "url": f"data:{mime_type};base64,{image_data}"
+                        "url": f"data:image/png;base64,{image_data}"
                     }
                 }
             ]

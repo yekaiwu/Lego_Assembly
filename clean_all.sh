@@ -9,6 +9,9 @@
   # Clear ALL JSON files in output directory
   rm -f output/*.json output/.*json
 
+  # Clear bbox visualizations
+  rm -rf output/bbox_visualisation
+
   # Clear Python bytecode
   find . -type f -name "*.pyc" -delete
   find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null
