@@ -21,6 +21,11 @@ from src.vision_processing.document_analyzer import (
 from src.plan_generation import PlanStructureGenerator, GraphBuilder
 from src.plan_generation.component_extractor import create_component_extractor
 from src.utils import get_config, URLHandler
+from src.utils.visualization import (
+    visualize_all_center_points,
+    create_extraction_summary_image,
+    log_component_extraction_results
+)
 
 # Import backend services for Phase 2
 sys.path.insert(0, str(Path(__file__).parent / "backend"))
@@ -319,11 +324,18 @@ def main(
         with open(extracted_path, 'w', encoding='utf-8') as f:
             json.dump(extracted_steps, f, indent=2, ensure_ascii=False)
         logger.info(f"Saved extracted data to {extracted_path}")
-        
+
         # Clean up temp file after successful completion
         if temp_extracted_path.exists():
             temp_extracted_path.unlink()
             logger.debug("Removed temporary extraction file")
+
+        # NEW: Visualize center points for debugging
+        logger.info("Creating center point visualizations for debugging...")
+        viz_paths = visualize_all_center_points(extracted_steps, str(output_dir))
+        if viz_paths:
+            logger.info(f"✓ Created {len(viz_paths)} center point visualizations")
+            logger.info(f"  View them in: {output_dir}/center_point_visualizations/")
         logger.info("")
 
         checkpoint.save("step_extraction")
@@ -397,9 +409,17 @@ def main(
 
         # Log extraction summary
         if component_extractor.is_enabled():
-            summary = component_extractor.get_extraction_summary()
-            logger.info(f"Component extraction: {summary['total_parts']} parts, "
-                        f"{summary['total_subassemblies']} subassemblies extracted")
+            # Detailed component extraction logging
+            log_component_extraction_results(component_extractor, str(output_dir))
+
+            # Create summary visualization
+            summary_img_path = output_dir / "component_extraction_summary.png"
+            summary_path = create_extraction_summary_image(
+                component_extractor,
+                str(summary_img_path)
+            )
+            if summary_path:
+                logger.info(f"✓ Component summary image: {summary_path}")
 
         logger.info(f"Hierarchical graph: {hierarchical_graph['metadata']['total_parts']} parts, "
                     f"{hierarchical_graph['metadata']['total_subassemblies']} subassemblies")

@@ -166,18 +166,15 @@ class SubassemblyDetector:
             }
         }
 
-        # Extract subassembly image (if SAM is enabled)
+        # Extract subassembly image (if CV detector is enabled)
         if component_extractor and component_extractor.is_enabled() and manual_page:
             subasm_id = f"step_{step_number}"
 
-            # Try to get bbox hint from VLM extraction
-            bbox_hint = self._get_assembled_result_bbox(step)
-
+            # Pass the VLM step data which contains assembled_result_center
             image_path = component_extractor.extract_subassembly_image(
                 subassembly_id=subasm_id,
                 page_path=manual_page,
-                bbox_hint=bbox_hint,
-                subassembly_data=subassembly
+                subassembly_data=step  # Pass VLM step data with assembled_result_center
             )
             if image_path:
                 subassembly["image_path"] = image_path

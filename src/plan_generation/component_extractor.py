@@ -2,15 +2,15 @@
 Component Extraction Service
 
 This module coordinates the extraction of component images (parts and subassemblies)
-during the hierarchical graph building process. It integrates SAM segmentation with
-the part association and subassembly detection modules.
+during the hierarchical graph building process. It uses Computer Vision (CV) based
+part detection with color segmentation and contour detection.
 
 Features:
-- Extract part images during part catalog building
+- Extract part images during part catalog building using CV detection
 - Extract subassembly images during subassembly detection
+- Color-based matching to link VLM semantic data with CV detections
 - Manage component image storage directory structure
 - Return image paths for inclusion in graph nodes
-- Handle graceful degradation when SAM is unavailable
 """
 
 import os
@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Optional, Dict, List, Any
 from loguru import logger
 
-from src.vision_processing.sam_segmenter import create_sam_segmenter_from_env, SAMSegmenter
+from src.vision_processing.cv_part_detector import create_cv_detector_from_env, CVPartDetector
 
 
 class ComponentExtractor:
@@ -33,7 +33,7 @@ class ComponentExtractor:
         self,
         output_dir: str,
         manual_id: str,
-        sam_segmenter: Optional[SAMSegmenter] = None
+        cv_detector: Optional[CVPartDetector] = None
     ):
         """
         Initialize component extractor.
@@ -41,11 +41,11 @@ class ComponentExtractor:
         Args:
             output_dir: Base output directory for the manual
             manual_id: Unique identifier for the instruction manual
-            sam_segmenter: Optional SAM segmenter instance (creates one if None)
+            cv_detector: Optional CV detector instance (creates one if None)
         """
         self.output_dir = output_dir
         self.manual_id = manual_id
-        self.sam_segmenter = sam_segmenter or create_sam_segmenter_from_env()
+        self.cv_detector = cv_detector or create_cv_detector_from_env()
 
         # Create components directory
         self.components_dir = self._get_components_dir()
@@ -69,29 +69,27 @@ class ComponentExtractor:
 
     def is_enabled(self) -> bool:
         """Check if component extraction is enabled and available."""
-        return self.sam_segmenter is not None and self.sam_segmenter.is_available()
+        return self.cv_detector is not None
 
     def extract_part_image(
         self,
         part_id: str,
         page_path: str,
-        bbox_hint: Optional[tuple] = None,
         part_data: Optional[Dict[str, Any]] = None
     ) -> Optional[str]:
         """
-        Extract and save a part image.
+        Extract and save a part image using VLM center point hint + CV detection.
 
         Args:
             part_id: Unique identifier for the part
             page_path: Path to the instruction page containing the part
-            bbox_hint: Optional bounding box hint (x1, y1, x2, y2)
-            part_data: Optional part data dictionary (for future enhancements)
+            part_data: Optional part data dictionary with center_point hint
 
         Returns:
             Relative path to the extracted part image, or None if extraction failed
         """
         if not self.is_enabled():
-            logger.debug(f"SAM not enabled, skipping part image extraction for {part_id}")
+            logger.debug(f"CV detector not enabled, skipping part image extraction for {part_id}")
             return None
 
         # Check if already extracted
@@ -105,17 +103,38 @@ class ComponentExtractor:
             return None
 
         try:
-            # Extract the part image
-            image_path = self.sam_segmenter.extract_part_image(
-                page_path=page_path,
-                part_id=part_id,
-                output_dir=self.components_dir,
-                bbox_hint=bbox_hint
+            # Get center point hint from part_data
+            center_point = None
+            if part_data and "center_point" in part_data:
+                center_point = tuple(part_data["center_point"])
+                logger.debug(f"Using VLM center point hint for {part_id}: {center_point}")
+
+            if not center_point:
+                logger.warning(f"No center_point provided for part {part_id}, cannot extract")
+                return None
+
+            # Detect part at center point using edge-based detection
+            detection = self.cv_detector.detect_at_center_point(
+                image_path=page_path,
+                center_point=center_point,
+                search_radius=150  # Search within 150px of the hint
             )
 
-            if image_path:
+            if not detection:
+                logger.warning(f"No part detected at center point {center_point} for {part_id}")
+                return None
+
+            # Extract using CV detector
+            output_path = os.path.join(self.components_dir, f"part_{part_id}.png")
+            part_image = self.cv_detector.extract_part_image(
+                image_path=page_path,
+                detection=detection,
+                output_path=output_path
+            )
+
+            if part_image:
                 # Convert to relative path for storage in graph
-                rel_path = self._get_relative_path(image_path)
+                rel_path = self._get_relative_path(output_path)
                 self.extracted_parts[part_id] = rel_path
                 logger.info(f"Extracted part image: {part_id} -> {rel_path}")
                 return rel_path
@@ -127,27 +146,72 @@ class ComponentExtractor:
             logger.error(f"Error extracting part image for {part_id}: {e}")
             return None
 
+    def _match_part_to_detection(
+        self,
+        part_data: Optional[Dict[str, Any]],
+        detections: List[Any]
+    ) -> Optional[Any]:
+        """
+        Match a part to a CV detection based on color and region.
+
+        Args:
+            part_data: Part data dictionary with color/shape info
+            detections: List of CV DetectedPart objects
+
+        Returns:
+            Best matching detection, or None
+        """
+        if not part_data:
+            # No part data - return first parts_box detection
+            for detection in detections:
+                if detection.region_type == "parts_box":
+                    return detection
+            return None
+
+        # Get part color from part_data
+        part_color = part_data.get("color", "").lower()
+
+        # Find detections in parts_box that match the color
+        matches = []
+        for detection in detections:
+            if detection.region_type != "parts_box":
+                continue
+
+            # Check if colors match
+            detection_color = detection.color_name.lower()
+            if part_color in detection_color or detection_color in part_color:
+                matches.append(detection)
+
+        # Return the largest match (most likely to be the main part)
+        if matches:
+            return max(matches, key=lambda d: d.area)
+
+        # Fallback: return first parts_box detection
+        for detection in detections:
+            if detection.region_type == "parts_box":
+                return detection
+
+        return None
+
     def extract_subassembly_image(
         self,
         subassembly_id: str,
         page_path: str,
-        bbox_hint: Optional[tuple] = None,
         subassembly_data: Optional[Dict[str, Any]] = None
     ) -> Optional[str]:
         """
-        Extract and save a subassembly image.
+        Extract and save a subassembly image using VLM center point hint + CV detection.
 
         Args:
             subassembly_id: Unique identifier for the subassembly
             page_path: Path to the instruction page containing the subassembly
-            bbox_hint: Optional bounding box hint (x1, y1, x2, y2)
-            subassembly_data: Optional subassembly data dictionary (for future enhancements)
+            subassembly_data: Optional subassembly data dictionary with assembled_result_center
 
         Returns:
             Relative path to the extracted subassembly image, or None if extraction failed
         """
         if not self.is_enabled():
-            logger.debug(f"SAM not enabled, skipping subassembly image extraction for {subassembly_id}")
+            logger.debug(f"CV detector not enabled, skipping subassembly image extraction for {subassembly_id}")
             return None
 
         # Check if already extracted
@@ -161,17 +225,38 @@ class ComponentExtractor:
             return None
 
         try:
-            # Extract the subassembly image
-            image_path = self.sam_segmenter.extract_subassembly_image(
-                page_path=page_path,
-                subassembly_id=subassembly_id,
-                output_dir=self.components_dir,
-                bbox_hint=bbox_hint
+            # Get center point hint from subassembly_data
+            center_point = None
+            if subassembly_data and "assembled_result_center" in subassembly_data:
+                center_point = tuple(subassembly_data["assembled_result_center"])
+                logger.debug(f"Using VLM center point hint for subassembly {subassembly_id}: {center_point}")
+
+            if not center_point:
+                logger.warning(f"No assembled_result_center provided for subassembly {subassembly_id}, cannot extract")
+                return None
+
+            # Detect subassembly at center point using edge-based detection
+            detection = self.cv_detector.detect_at_center_point(
+                image_path=page_path,
+                center_point=center_point,
+                search_radius=200  # Larger radius for assembled results
             )
 
-            if image_path:
+            if not detection:
+                logger.warning(f"No subassembly detected at center point {center_point} for {subassembly_id}")
+                return None
+
+            # Extract using CV detector
+            output_path = os.path.join(self.components_dir, f"subasm_{subassembly_id}.png")
+            subasm_image = self.cv_detector.extract_part_image(
+                image_path=page_path,
+                detection=detection,
+                output_path=output_path
+            )
+
+            if subasm_image:
                 # Convert to relative path for storage in graph
-                rel_path = self._get_relative_path(image_path)
+                rel_path = self._get_relative_path(output_path)
                 self.extracted_subassemblies[subassembly_id] = rel_path
                 logger.info(f"Extracted subassembly image: {subassembly_id} -> {rel_path}")
                 return rel_path
@@ -190,7 +275,7 @@ class ComponentExtractor:
         max_components: int = 20
     ) -> List[str]:
         """
-        Extract all components from a step's instruction page.
+        Extract all components from a step's instruction page using CV detection.
 
         Args:
             step_number: Step number
@@ -208,13 +293,30 @@ class ComponentExtractor:
             return []
 
         try:
-            # Extract all components from the page
-            component_paths = self.sam_segmenter.extract_multiple_components(
+            # Detect all parts and assembled results
+            detections = self.cv_detector.detect_parts(
                 image_path=page_path,
-                output_dir=self.components_dir,
-                prefix=f"step_{step_number:03d}_component",
-                max_components=max_components
+                include_assembled=True
             )
+
+            # Limit to max_components
+            detections = detections[:max_components]
+
+            component_paths = []
+            for i, detection in enumerate(detections):
+                output_path = os.path.join(
+                    self.components_dir,
+                    f"step_{step_number:03d}_component_{i:02d}.png"
+                )
+
+                part_image = self.cv_detector.extract_part_image(
+                    image_path=page_path,
+                    detection=detection,
+                    output_path=output_path
+                )
+
+                if part_image:
+                    component_paths.append(output_path)
 
             # Convert to relative paths
             rel_paths = [self._get_relative_path(path) for path in component_paths]
@@ -274,24 +376,16 @@ class ComponentExtractor:
         Get a summary of extracted components.
 
         Returns:
-            Dictionary with extraction statistics including cache performance
+            Dictionary with extraction statistics
         """
         summary = {
             "total_parts": len(self.extracted_parts),
             "total_subassemblies": len(self.extracted_subassemblies),
             "components_dir": self.components_dir,
-            "sam_enabled": self.is_enabled(),
+            "cv_enabled": self.is_enabled(),
             "extracted_parts": list(self.extracted_parts.keys()),
             "extracted_subassemblies": list(self.extracted_subassemblies.keys())
         }
-
-        # Include cache statistics if SAM is enabled
-        if self.is_enabled() and self.sam_segmenter:
-            cache_stats = self.sam_segmenter.get_cache_stats()
-            summary["cache_stats"] = cache_stats
-
-            # Log cache performance
-            self.sam_segmenter.log_cache_stats()
 
         return summary
 

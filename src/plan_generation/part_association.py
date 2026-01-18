@@ -337,15 +337,32 @@ class PartAssociationModule:
                 # Generate a unique part ID for this part
                 part_id = f"{part['color']}_{part['shape']}".replace(" ", "_")
 
-                # Try to find bbox hint from VLM extraction
-                bbox_hint = self._find_part_bbox(part, first_appears_step, extracted_steps)
+                # Get VLM center point hint from extracted_steps
+                center_point = None
+                for step in extracted_steps:
+                    if step.get("step_number") == first_appears_step:
+                        parts_required = step.get("parts_required", [])
+                        # Try to match this part to a part in parts_required by color and shape
+                        for part_req in parts_required:
+                            if (part_req.get("color", "").lower() in part["color"].lower() or
+                                part["color"].lower() in part_req.get("color", "").lower()):
+                                if "center_point" in part_req:
+                                    center_point = part_req["center_point"]
+                                    logger.debug(f"Found center_point {center_point} for {part['name']}")
+                                    break
+                        if center_point:
+                            break
 
-                # Extract the part image
+                # Prepare part data with center point hint
+                part_data_with_hint = part.copy()
+                if center_point:
+                    part_data_with_hint["center_point"] = center_point
+
+                # Extract the part image using CV detection with center point hint
                 image_path = component_extractor.extract_part_image(
                     part_id=part_id,
                     page_path=page_path,
-                    bbox_hint=bbox_hint,
-                    part_data=part
+                    part_data=part_data_with_hint
                 )
 
                 if image_path:

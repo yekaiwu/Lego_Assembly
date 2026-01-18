@@ -9,8 +9,17 @@
   # Clear ALL JSON files in output directory
   rm -f output/*.json output/.*json
 
+  # Clear all images in output directory
+  rm -f output/*.png output/*.jpg output/*.jpeg
+
   # Clear bbox visualizations
   rm -rf output/bbox_visualisation
+
+  # Clear temp_pages images
+  rm -rf output/temp_pages
+
+  # Clear components directory
+  rm -rf output/components
 
   # Clear Python bytecode
   find . -type f -name "*.pyc" -delete

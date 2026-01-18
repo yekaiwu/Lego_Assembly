@@ -175,11 +175,8 @@ class UnifiedVLMClient:
             # Normalize to array format
             normalized_result = self._normalize_to_array(result)
 
-            # Validate bbox presence and add defaults if missing
-            normalized_result = self._ensure_bbox_fields(normalized_result)
-
-            # Convert bboxes from Gemini normalized format to pixel coordinates
-            normalized_result = self._convert_bboxes_to_pixels(normalized_result, image_width, image_height)
+            # Convert center points from normalized (0-1000) to pixel coordinates
+            normalized_result = self._convert_center_points_to_pixels(normalized_result, image_width, image_height)
 
             # Cache result
             self.cache.set(self.model, cache_key, normalized_result, image_paths)
@@ -351,11 +348,8 @@ class UnifiedVLMClient:
             result = self._parse_response(result_text, use_json_mode=True)
             normalized_result = self._normalize_to_array(result)
 
-            # Validate bbox presence and add defaults if missing
-            normalized_result = self._ensure_bbox_fields(normalized_result)
-
-            # Convert bboxes from Gemini normalized format to pixel coordinates
-            normalized_result = self._convert_bboxes_to_pixels(normalized_result, image_width, image_height)
+            # Convert center points from normalized (0-1000) to pixel coordinates
+            normalized_result = self._convert_center_points_to_pixels(normalized_result, image_width, image_height)
 
             # Cache result
             self.cache.set(self.model, cache_key, normalized_result, image_paths)
@@ -384,7 +378,7 @@ class UnifiedVLMClient:
         "shape": "brick type and dimensions",
         "part_id": "LEGO part ID if visible",
         "quantity": <number>,
-        "bbox": [y_min, x_min, y_max, x_max]
+        "center_point": [x, y]
       }}
     ],
     "existing_assembly": "description of already assembled parts shown",
@@ -405,51 +399,30 @@ class UnifiedVLMClient:
       "alignment": "alignment instructions"
     }},
     "dependencies": "which previous steps are prerequisites",
-    "notes": "any special instructions or warnings"
+    "notes": "any special instructions or warnings",
+    "assembled_result_center": [x, y]
   }}
 ]
 
-CRITICAL INSTRUCTIONS:
+CRITICAL INSTRUCTIONS - LOCATION COORDINATES:
+1. For each part in parts_required, provide "center_point": [x, y] indicating the CENTER of that part in the parts list/callout box
+2. For each step, provide "assembled_result_center": [x, y] indicating the CENTER of the assembled result shown
+3. Coordinates MUST be in normalized format from 0-1000:
+   - x=0 is leftmost edge, x=1000 is rightmost edge
+   - y=0 is topmost edge, y=1000 is bottommost edge
+   - Example: Center of image would be [500, 500]
+4. These center points help locate components for visual extraction
+
+GENERAL INSTRUCTIONS:
 1. Look carefully - the page may show 1, 2, or more steps
 2. Each step typically has a step number visible in the image
 3. Return ALL steps as an array, even if there's only one
 4. Keep descriptions concise (max 10-15 words per field)
-5. Return ONLY the JSON array, no additional text
-
-BOUNDING BOX INSTRUCTIONS (MANDATORY):
-6. For EVERY part in parts_required, you MUST provide bbox coordinates in NORMALIZED format:
-   "bbox": [y_min, x_min, y_max, x_max]
-
-   CRITICAL - WHAT TO DRAW THE BBOX AROUND:
-   - Draw bbox around the PART ICON/IMAGE in the parts inventory callout box
-   - The parts inventory is typically shown in small boxes with quantity (e.g., "1x", "2x")
-   - Focus on the VISUAL REPRESENTATION of the part itself (the brick/piece image)
-   - DO NOT include text labels, quantity numbers, or callout box borders
-   - The bbox should TIGHTLY fit the part illustration/icon
-   - If a part appears in multiple places, target the INVENTORY/CALLOUT version (not the assembled version)
-
-   WHERE:
-   - Coordinates are NORMALIZED from 0 to 1000
-   - y_min, x_min = top-left corner (normalized coordinates)
-   - y_max, x_max = bottom-right corner (normalized coordinates)
-   - 0 represents the top/left edge, 1000 represents the bottom/right edge
-
-   EXAMPLES:
-   - Part icon in top-right callout: "bbox": [50, 700, 150, 900]
-   - Part icon in left callout: "bbox": [200, 100, 350, 250]
-   - Center part icon: "bbox": [400, 400, 500, 500]
-
-   CRITICAL REQUIREMENTS (MANDATORY):
-   - EVERY SINGLE PART in parts_required MUST have a bbox field
-   - If you list a part, you MUST provide its bbox - NO EXCEPTIONS
-   - Draw bbox TIGHTLY around each part icon (not the entire callout box)
-   - When multiple parts share a callout box, draw SEPARATE bboxes for EACH part
-   - Always use normalized coordinates in the range 0-1000
-   - Format is [y_min, x_min, y_max, x_max] NOT [x1, y1, x2, y2]
-   - VALIDATION: Number of bboxes MUST equal number of parts
+5. Focus on extracting semantic information: WHAT parts, WHAT colors, WHAT actions, and WHERE they are located
+6. Return ONLY the JSON array, no additional text
 
 FORMAT EXAMPLES:
-- Single step: [{{"step_number": 1, "parts_required": [{{"bbox": [100, 150, 300, 400], ...}}], ...}}]
+- Single step: [{{"step_number": 1, "parts_required": [{{"color": "brown", "shape": "2x3 brick", "quantity": 2, "center_point": [150, 80]}}], "assembled_result_center": [700, 400], ...}}]
 - Two steps: [{{"step_number": 1, ...}}, {{"step_number": 2, ...}}]"""
 
         return prompt
@@ -527,6 +500,84 @@ FORMAT EXAMPLES:
         y2 = int((y_max / 1000.0) * height)
 
         return [x1, y1, x2, y2]
+
+    def _convert_center_point_to_pixels(self, center_point: List[int], image_width: int = None, image_height: int = None) -> List[int]:
+        """
+        Convert center point from normalized coordinates to pixel coordinates.
+
+        Gemini format: [x, y] in normalized coords (0-1000)
+        Output format: [x, y] in pixel coords
+
+        Args:
+            center_point: Normalized coordinates [x, y] in range 0-1000
+            image_width: Image width in pixels (if None, assumes 1000)
+            image_height: Image height in pixels (if None, assumes 1000)
+
+        Returns:
+            Pixel coordinates [x, y] or None if invalid
+        """
+        if not center_point or len(center_point) != 2:
+            return None
+
+        x_norm, y_norm = center_point
+
+        # Use default dimensions if not provided
+        width = image_width or 1000
+        height = image_height or 1000
+
+        # Convert from normalized (0-1000) to pixels
+        x = int((x_norm / 1000.0) * width)
+        y = int((y_norm / 1000.0) * height)
+
+        return [x, y]
+
+    def _convert_center_points_to_pixels(
+        self,
+        results: List[Dict[str, Any]],
+        image_width: int,
+        image_height: int
+    ) -> List[Dict[str, Any]]:
+        """
+        Convert all center points from normalized format to pixel coordinates.
+
+        Gemini format: [x, y] (0-1000 normalized)
+        Output format: [x, y] (pixel coordinates)
+
+        Args:
+            results: List of step extraction results
+            image_width: Image width in pixels
+            image_height: Image height in pixels
+
+        Returns:
+            Updated results with center points converted to pixel coordinates
+        """
+        converted_count = 0
+
+        for step in results:
+            # Convert parts_required center_points
+            if "parts_required" in step:
+                for part in step["parts_required"]:
+                    if "center_point" in part and part["center_point"]:
+                        original_point = part["center_point"]
+                        pixel_point = self._convert_center_point_to_pixels(original_point, image_width, image_height)
+                        if pixel_point:
+                            part["center_point"] = pixel_point
+                            converted_count += 1
+                            logger.debug(f"Converted part center_point: {original_point} → {pixel_point}")
+
+            # Convert assembled_result_center
+            if "assembled_result_center" in step and step["assembled_result_center"]:
+                original_point = step["assembled_result_center"]
+                pixel_point = self._convert_center_point_to_pixels(original_point, image_width, image_height)
+                if pixel_point:
+                    step["assembled_result_center"] = pixel_point
+                    converted_count += 1
+                    logger.debug(f"Converted assembled center: {original_point} → {pixel_point}")
+
+        if converted_count > 0:
+            logger.info(f"✓ Converted {converted_count} center points from normalized (0-1000) to pixel coordinates")
+
+        return results
 
     def _convert_bboxes_to_pixels(
         self,
