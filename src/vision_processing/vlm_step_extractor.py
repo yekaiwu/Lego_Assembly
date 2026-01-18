@@ -16,7 +16,7 @@ from .token_budget import TokenBudgetManager
 class VLMStepExtractor:
     """Extracts structured step information using VLMs with fallback support."""
 
-    def __init__(self, enable_spatial_relationships: bool = True, enable_bbox_visualization: bool = True, bbox_output_dir: str = "output/bbox_visualisation"):
+    def __init__(self, enable_spatial_relationships: bool = True):
         config = get_config()
         self.ingestion_vlm = config.models.ingestion_vlm
         self.ingestion_secondary_vlm = config.models.ingestion_secondary_vlm
@@ -25,26 +25,22 @@ class VLMStepExtractor:
         self.build_memory: Optional[BuildMemory] = None  # Context-aware memory
         self.token_budget: Optional[TokenBudgetManager] = None  # Token management
         self.enable_spatial_relationships = enable_spatial_relationships  # Spatial relationship extraction
-        self.enable_bbox_visualization = enable_bbox_visualization  # Bbox visualization
-        self.bbox_output_dir = bbox_output_dir  # Output directory for visualizations
+        self._prompt_manager = None  # Lazy loaded to avoid circular imports
 
         # Cache for unified VLM clients (created on-demand)
         self._client_cache = {}
 
-        # Initialize bbox visualizer if enabled
-        self.bbox_visualizer = None
-        if self.enable_bbox_visualization:
-            try:
-                from ..utils.bbox_visualizer import BBoxVisualizer
-                self.bbox_visualizer = BBoxVisualizer(output_dir=self.bbox_output_dir)
-                logger.info(f"✓ Bbox visualization enabled - output: {self.bbox_output_dir}")
-            except Exception as e:
-                logger.warning(f"Failed to initialize bbox visualizer: {e}. Visualization disabled.")
-                self.enable_bbox_visualization = False
-
         logger.info(f"VLM Step Extractor initialized with ingestion VLM: {self.ingestion_vlm}")
         if not enable_spatial_relationships:
             logger.warning("⚠ Spatial relationships disabled - spatial reasoning unavailable")
+
+    @property
+    def prompt_manager(self):
+        """Lazy load PromptManager to avoid circular imports."""
+        if self._prompt_manager is None:
+            from app.vision.prompt_manager import get_prompt_manager
+            self._prompt_manager = get_prompt_manager()
+        return self._prompt_manager
 
     def _get_client(self, vlm_name: str) -> UnifiedVLMClient:
         """
@@ -136,19 +132,6 @@ class VLMStepExtractor:
                 for result in results:
                     if "error" not in result:
                         self.build_memory.add_step(result)
-
-            # Visualize bboxes if enabled
-            if self.enable_bbox_visualization and self.bbox_visualizer and image_paths:
-                try:
-                    # Visualize for the first image path (main instruction page)
-                    main_image = image_paths[0]
-                    self.bbox_visualizer.visualize_all_steps(
-                        image_path=main_image,
-                        extraction_results=results,
-                        base_name=Path(main_image).stem
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to generate bbox visualization: {e}")
 
             return results
         else:
@@ -245,7 +228,7 @@ class VLMStepExtractor:
         context: Dict[str, str]
     ) -> str:
         """
-        Build enhanced prompt with context.
+        Build enhanced prompt with context using centralized PromptManager.
 
         Includes:
         - Sliding window (recent steps)
@@ -254,144 +237,29 @@ class VLMStepExtractor:
         """
         step_context = f"Step {step_number}: " if step_number else ""
 
-        prompt_parts = []
-
-        # Add long-term context (high-level overview)
+        # Build context section from long-term and sliding window
+        context_parts = []
         if context.get("long_term"):
-            prompt_parts.append(f"""
-BUILD CONTEXT:
+            context_parts.append(f"""BUILD CONTEXT:
 {context['long_term']}
 """)
-
-        # Add sliding window context (recent steps)
         if context.get("sliding_window"):
-            prompt_parts.append(f"""
-{context['sliding_window']}
-""")
+            context_parts.append(f"""{context['sliding_window']}""")
 
-        # Build schema parts conditionally
-        spatial_schema = ""
-        if self.enable_spatial_relationships:
-            spatial_schema = """    "spatial_relationships": {{
+        # Build template context for PromptManager substitution
+        template_context = {
+            "context_section": "\n".join(context_parts),
+            "task_description": f"IMPORTANT: This page may contain ONE or MORE assembly steps. Analyze carefully and extract ALL steps shown.\n\n{step_context}",
+            "spatial_schema": """    "spatial_relationships": {
       "position": "top|bottom|left|right|front|back|center",
       "rotation": "rotation description if any",
       "alignment": "alignment instructions"
-    }},
-"""
+    },
+""" if self.enable_spatial_relationships else ""
+        }
 
-        # Main extraction instructions
-        prompt_parts.append(f"""
-CURRENT TASK:
-IMPORTANT: This page may contain ONE or MORE assembly steps. Analyze carefully and extract ALL steps shown.
-
-{step_context}Return a JSON ARRAY containing ALL steps found on this page:
-
-[
-  {{
-    "step_number": <number or null>,
-    "parts_required": [
-      {{
-        "description": "part description",
-        "color": "color name",
-        "shape": "brick type and dimensions",
-        "part_id": "LEGO part ID if visible",
-        "quantity": <number>,
-        "bbox": [y_min, x_min, y_max, x_max]
-      }}
-    ],
-    "existing_assembly": "description of already assembled parts shown",
-    "new_parts_to_add": [
-      "description of each new part being added in this step"
-    ],
-    "actions": [
-      {{
-        "action_verb": "attach|connect|place|align|rotate",
-        "target": "what is being attached",
-        "destination": "where it's being attached",
-        "orientation": "directional cues"
-      }}
-    ],
-{spatial_schema}    "dependencies": "which previous steps are prerequisites",
-    "notes": "any special instructions or warnings",
-
-    "assembled_result_bbox": [y_min, x_min, y_max, x_max],
-
-    "subassembly_hint": {{
-      "is_new_subassembly": true/false,
-      "name": "descriptive name if new (e.g., 'wheel_assembly')",
-      "description": "what is being built (e.g., '4-wheel chassis')",
-      "continues_previous": true/false
-    }},
-
-    "context_references": {{
-      "references_previous_steps": true/false,
-      "which_steps": [list of step numbers referenced],
-      "reference_description": "what is being referenced (e.g., 'the base from step 4')"
-    }}
-  }}
-]
-
-IMPORTANT INSTRUCTIONS:
-1. Look carefully - the page may show 1, 2, or more steps (typically identified by step numbers in the image)
-2. Return ALL steps as an array, even if there's only one step
-3. Consider the build context and recent steps when analyzing
-4. If a step references previous work, identify which step in "context_references"
-5. Determine if each step starts a new subassembly or continues the current one
-6. Focus on what's NEW in each step, not what was already built
-
-BOUNDING BOX INSTRUCTIONS (MANDATORY):
-7. For EVERY part in parts_required, you MUST provide bbox coordinates in NORMALIZED format:
-   "bbox": [y_min, x_min, y_max, x_max]
-
-   CRITICAL - WHAT TO DRAW THE BBOX AROUND:
-   - Draw bbox around the PART ICON/IMAGE in the parts inventory callout box
-   - The parts inventory is typically shown in small boxes with quantity (e.g., "1x", "2x")
-   - Focus on the VISUAL REPRESENTATION of the part itself (the brick/piece image)
-   - DO NOT include text labels, quantity numbers, or callout box borders
-   - The bbox should TIGHTLY fit the part illustration/icon
-   - If a part appears in multiple places, target the INVENTORY/CALLOUT version (not the assembled version)
-
-   WHERE:
-   - Coordinates are NORMALIZED from 0 to 1000
-   - y_min, x_min = top-left corner (normalized coordinates)
-   - y_max, x_max = bottom-right corner (normalized coordinates)
-   - 0 represents the top/left edge, 1000 represents the bottom/right edge
-
-   EXAMPLES:
-   - Part icon in top-right callout: "bbox": [50, 700, 150, 900]
-   - Part icon in left callout: "bbox": [200, 100, 350, 250]
-   - Center part icon: "bbox": [400, 400, 500, 500]
-
-   CRITICAL REQUIREMENTS (MANDATORY):
-   - EVERY SINGLE PART in parts_required MUST have a bbox field
-   - If you list a part, you MUST provide its bbox - NO EXCEPTIONS
-   - Draw bbox TIGHTLY around each part icon (not the entire callout box)
-   - When multiple parts share a callout box, draw SEPARATE bboxes for EACH part
-   - Always use normalized coordinates in the range 0-1000
-   - Format is [y_min, x_min, y_max, x_max] NOT [x1, y1, x2, y2]
-   - VALIDATION: Number of bboxes MUST equal number of parts
-
-8. For assembled_result_bbox, provide the bounding box of the FINAL ASSEMBLED RESULT shown in this step:
-   - This is the assembled/completed state after adding the new parts
-   - Usually shown as the main illustration in the step (often on the right side)
-   - Format: [y_min, x_min, y_max, x_max] in normalized coordinates (0-1000)
-   - This bbox should encompass the entire assembled structure, not just the new parts
-
-RESPONSE CONSTRAINTS (CRITICAL):
-- Keep descriptions CONCISE (max 10-15 words per field)
-- Use short phrases, not full sentences
-- Prioritize accuracy over detail
-- If information is unclear, mark as null or "unclear"
-- Limit "actions" array to 3 most important actions per step
-- Keep "existing_assembly" under 20 words
-- Return ONLY the JSON array, no additional text
-
-Example formats:
-- One step on page: [{{step 1 data}}]
-- Two steps on page: [{{step 1 data}}, {{step 2 data}}]
-""")
-
-        return "\n".join(prompt_parts)
+        # Use PromptManager to get the prompt with context
+        return self.prompt_manager.get_prompt("step_extraction", context=template_context)
     
     def _extract_with_fallback(
         self,
@@ -411,18 +279,6 @@ Example formats:
                 # If extraction succeeded, return (results is now an array)
                 # Check if any result has an error
                 if not any("error" in r for r in results):
-                    # Visualize bboxes if enabled
-                    if self.enable_bbox_visualization and self.bbox_visualizer and image_paths:
-                        try:
-                            main_image = image_paths[0]
-                            self.bbox_visualizer.visualize_all_steps(
-                                image_path=main_image,
-                                extraction_results=results,
-                                base_name=Path(main_image).stem
-                            )
-                        except Exception as e:
-                            logger.warning(f"Failed to generate bbox visualization: {e}")
-
                     return results
 
                 logger.warning(f"{vlm_name} failed, trying next VLM...")

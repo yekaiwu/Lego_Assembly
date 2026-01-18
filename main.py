@@ -11,6 +11,10 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 from loguru import logger
 
+# IMPORTANT: Add backend to Python path BEFORE importing src modules
+# This allows src modules to import from app.vision.prompt_manager
+sys.path.insert(0, str(Path(__file__).parent / "backend"))
+
 from src.vision_processing import ManualInputHandler, VLMStepExtractor, DependencyGraph
 from src.vision_processing.user_metadata_collector import UserMetadataCollector
 from src.vision_processing.metadata_models import UserProvidedMetadata
@@ -21,9 +25,13 @@ from src.vision_processing.document_analyzer import (
 from src.plan_generation import PlanStructureGenerator, GraphBuilder
 from src.plan_generation.component_extractor import create_component_extractor
 from src.utils import get_config, URLHandler
+from src.utils.visualization import (
+    visualize_all_center_points,
+    create_extraction_summary_image,
+    log_component_extraction_results
+)
 
 # Import backend services for Phase 2
-sys.path.insert(0, str(Path(__file__).parent / "backend"))
 from app.ingestion.ingest_service import IngestionService
 
 class ProcessingCheckpoint:
@@ -155,9 +163,15 @@ def main(
         checkpoint.clear()
     
     # Step 1: Manual Input Processing
-    if not checkpoint.is_step_complete("page_extraction"):
+    temp_pages_dir = output_dir / "temp_pages"
+    temp_pages_exist = temp_pages_dir.exists() and list(temp_pages_dir.glob("page_*.png"))
+
+    if not checkpoint.is_step_complete("page_extraction") or not temp_pages_exist:
+        if not temp_pages_exist and checkpoint.is_step_complete("page_extraction"):
+            logger.warning("⚠ temp_pages missing despite checkpoint - re-extracting pages")
+
         logger.info("Step 1/7: Processing manual input...")
-        manual_handler = ManualInputHandler(output_dir=output_dir / "temp_pages")
+        manual_handler = ManualInputHandler(output_dir=temp_pages_dir)
 
         page_paths = manual_handler.process_manual(input_path)
         logger.info(f"Extracted {len(page_paths)} pages")
@@ -166,8 +180,8 @@ def main(
     else:
         logger.info("Step 1/7: ✓ Page extraction already complete (skipping)")
         # Load page paths from checkpoint
-        manual_handler = ManualInputHandler(output_dir=output_dir / "temp_pages")
-        page_paths = sorted(list((output_dir / "temp_pages").glob("page_*.png")))
+        manual_handler = ManualInputHandler(output_dir=temp_pages_dir)
+        page_paths = sorted(list(temp_pages_dir.glob("page_*.png")))
 
     # Step 2 (UPDATED): User-Provided Metadata Collection
     if not checkpoint.is_step_complete("metadata_collection"):
@@ -319,11 +333,18 @@ def main(
         with open(extracted_path, 'w', encoding='utf-8') as f:
             json.dump(extracted_steps, f, indent=2, ensure_ascii=False)
         logger.info(f"Saved extracted data to {extracted_path}")
-        
+
         # Clean up temp file after successful completion
         if temp_extracted_path.exists():
             temp_extracted_path.unlink()
             logger.debug("Removed temporary extraction file")
+
+        # NEW: Visualize center points for debugging
+        logger.info("Creating center point visualizations for debugging...")
+        viz_paths = visualize_all_center_points(extracted_steps, str(output_dir))
+        if viz_paths:
+            logger.info(f"✓ Created {len(viz_paths)} center point visualizations")
+            logger.info(f"  View them in: {output_dir}/center_point_visualizations/")
         logger.info("")
 
         checkpoint.save("step_extraction")
@@ -397,9 +418,17 @@ def main(
 
         # Log extraction summary
         if component_extractor.is_enabled():
-            summary = component_extractor.get_extraction_summary()
-            logger.info(f"Component extraction: {summary['total_parts']} parts, "
-                        f"{summary['total_subassemblies']} subassemblies extracted")
+            # Detailed component extraction logging
+            log_component_extraction_results(component_extractor, str(output_dir))
+
+            # Create summary visualization
+            summary_img_path = output_dir / "component_extraction_summary.png"
+            summary_path = create_extraction_summary_image(
+                component_extractor,
+                str(summary_img_path)
+            )
+            if summary_path:
+                logger.info(f"✓ Component summary image: {summary_path}")
 
         logger.info(f"Hierarchical graph: {hierarchical_graph['metadata']['total_parts']} parts, "
                     f"{hierarchical_graph['metadata']['total_subassemblies']} subassemblies")

@@ -26,6 +26,7 @@ class UnifiedVLMClient:
         config = get_config()
         self.model = model_name
         self.cache = get_cache()
+        self._prompt_manager = None  # Lazy loaded to avoid circular imports
 
         # Set API keys in environment for LiteLLM
         if config.api.openai_api_key:
@@ -45,6 +46,14 @@ class UnifiedVLMClient:
         litellm.drop_params = True  # Drop unsupported parameters
 
         logger.info(f"UnifiedVLMClient initialized with model: {self.model}")
+
+    @property
+    def prompt_manager(self):
+        """Lazy load PromptManager to avoid circular imports."""
+        if self._prompt_manager is None:
+            from app.vision.prompt_manager import get_prompt_manager
+            self._prompt_manager = get_prompt_manager()
+        return self._prompt_manager
 
     def extract_step_info(
         self,
@@ -175,11 +184,8 @@ class UnifiedVLMClient:
             # Normalize to array format
             normalized_result = self._normalize_to_array(result)
 
-            # Validate bbox presence and add defaults if missing
-            normalized_result = self._ensure_bbox_fields(normalized_result)
-
-            # Convert bboxes from Gemini normalized format to pixel coordinates
-            normalized_result = self._convert_bboxes_to_pixels(normalized_result, image_width, image_height)
+            # Convert center points from normalized (0-1000) to pixel coordinates
+            normalized_result = self._convert_center_points_to_pixels(normalized_result, image_width, image_height)
 
             # Cache result
             self.cache.set(self.model, cache_key, normalized_result, image_paths)
@@ -351,11 +357,8 @@ class UnifiedVLMClient:
             result = self._parse_response(result_text, use_json_mode=True)
             normalized_result = self._normalize_to_array(result)
 
-            # Validate bbox presence and add defaults if missing
-            normalized_result = self._ensure_bbox_fields(normalized_result)
-
-            # Convert bboxes from Gemini normalized format to pixel coordinates
-            normalized_result = self._convert_bboxes_to_pixels(normalized_result, image_width, image_height)
+            # Convert center points from normalized (0-1000) to pixel coordinates
+            normalized_result = self._convert_center_points_to_pixels(normalized_result, image_width, image_height)
 
             # Cache result
             self.cache.set(self.model, cache_key, normalized_result, image_paths)
@@ -367,92 +370,23 @@ class UnifiedVLMClient:
             return [{"error": str(e)}]
 
     def _build_extraction_prompt(self, step_number: Optional[int], use_json_mode: bool) -> str:
-        """Build extraction prompt that handles multiple steps per page."""
+        """Build extraction prompt using centralized PromptManager."""
         step_hint = f"Look for step {step_number} specifically. " if step_number else ""
 
-        prompt = f"""IMPORTANT: This page may contain ONE or MORE assembly steps. Analyze carefully and extract ALL steps shown.
-
-{step_hint}Return a JSON ARRAY containing ALL steps found on this page:
-
-[
-  {{
-    "step_number": <number or null>,
-    "parts_required": [
-      {{
-        "description": "part description",
-        "color": "color name",
-        "shape": "brick type and dimensions",
-        "part_id": "LEGO part ID if visible",
-        "quantity": <number>,
-        "bbox": [y_min, x_min, y_max, x_max]
-      }}
-    ],
-    "existing_assembly": "description of already assembled parts shown",
-    "new_parts_to_add": [
-      "description of each new part being added in this step"
-    ],
-    "actions": [
-      {{
-        "action_verb": "attach|connect|place|align|rotate",
-        "target": "what is being attached",
-        "destination": "where it's being attached",
-        "orientation": "directional cues"
-      }}
-    ],
-    "spatial_relationships": {{
+        # Build context for template substitution
+        context = {
+            "context_section": "",  # No build context for basic extraction
+            "task_description": f"IMPORTANT: This page may contain ONE or MORE assembly steps. Analyze carefully and extract ALL steps shown.\n\n{step_hint}",
+            "spatial_schema": """    "spatial_relationships": {
       "position": "top|bottom|left|right|front|back|center",
       "rotation": "rotation description if any",
       "alignment": "alignment instructions"
-    }},
-    "dependencies": "which previous steps are prerequisites",
-    "notes": "any special instructions or warnings"
-  }}
-]
+    },
+"""
+        }
 
-CRITICAL INSTRUCTIONS:
-1. Look carefully - the page may show 1, 2, or more steps
-2. Each step typically has a step number visible in the image
-3. Return ALL steps as an array, even if there's only one
-4. Keep descriptions concise (max 10-15 words per field)
-5. Return ONLY the JSON array, no additional text
-
-BOUNDING BOX INSTRUCTIONS (MANDATORY):
-6. For EVERY part in parts_required, you MUST provide bbox coordinates in NORMALIZED format:
-   "bbox": [y_min, x_min, y_max, x_max]
-
-   CRITICAL - WHAT TO DRAW THE BBOX AROUND:
-   - Draw bbox around the PART ICON/IMAGE in the parts inventory callout box
-   - The parts inventory is typically shown in small boxes with quantity (e.g., "1x", "2x")
-   - Focus on the VISUAL REPRESENTATION of the part itself (the brick/piece image)
-   - DO NOT include text labels, quantity numbers, or callout box borders
-   - The bbox should TIGHTLY fit the part illustration/icon
-   - If a part appears in multiple places, target the INVENTORY/CALLOUT version (not the assembled version)
-
-   WHERE:
-   - Coordinates are NORMALIZED from 0 to 1000
-   - y_min, x_min = top-left corner (normalized coordinates)
-   - y_max, x_max = bottom-right corner (normalized coordinates)
-   - 0 represents the top/left edge, 1000 represents the bottom/right edge
-
-   EXAMPLES:
-   - Part icon in top-right callout: "bbox": [50, 700, 150, 900]
-   - Part icon in left callout: "bbox": [200, 100, 350, 250]
-   - Center part icon: "bbox": [400, 400, 500, 500]
-
-   CRITICAL REQUIREMENTS (MANDATORY):
-   - EVERY SINGLE PART in parts_required MUST have a bbox field
-   - If you list a part, you MUST provide its bbox - NO EXCEPTIONS
-   - Draw bbox TIGHTLY around each part icon (not the entire callout box)
-   - When multiple parts share a callout box, draw SEPARATE bboxes for EACH part
-   - Always use normalized coordinates in the range 0-1000
-   - Format is [y_min, x_min, y_max, x_max] NOT [x1, y1, x2, y2]
-   - VALIDATION: Number of bboxes MUST equal number of parts
-
-FORMAT EXAMPLES:
-- Single step: [{{"step_number": 1, "parts_required": [{{"bbox": [100, 150, 300, 400], ...}}], ...}}]
-- Two steps: [{{"step_number": 1, ...}}, {{"step_number": 2, ...}}]"""
-
-        return prompt
+        # Use PromptManager to get the prompt with context
+        return self.prompt_manager.get_prompt("step_extraction", context=context)
 
     def _parse_response(self, response_text: str, use_json_mode: bool) -> Any:
         """Parse JSON response from VLM."""
@@ -527,6 +461,84 @@ FORMAT EXAMPLES:
         y2 = int((y_max / 1000.0) * height)
 
         return [x1, y1, x2, y2]
+
+    def _convert_center_point_to_pixels(self, center_point: List[int], image_width: int = None, image_height: int = None) -> List[int]:
+        """
+        Convert center point from normalized coordinates to pixel coordinates.
+
+        Gemini format: [x, y] in normalized coords (0-1000)
+        Output format: [x, y] in pixel coords
+
+        Args:
+            center_point: Normalized coordinates [x, y] in range 0-1000
+            image_width: Image width in pixels (if None, assumes 1000)
+            image_height: Image height in pixels (if None, assumes 1000)
+
+        Returns:
+            Pixel coordinates [x, y] or None if invalid
+        """
+        if not center_point or len(center_point) != 2:
+            return None
+
+        x_norm, y_norm = center_point
+
+        # Use default dimensions if not provided
+        width = image_width or 1000
+        height = image_height or 1000
+
+        # Convert from normalized (0-1000) to pixels
+        x = int((x_norm / 1000.0) * width)
+        y = int((y_norm / 1000.0) * height)
+
+        return [x, y]
+
+    def _convert_center_points_to_pixels(
+        self,
+        results: List[Dict[str, Any]],
+        image_width: int,
+        image_height: int
+    ) -> List[Dict[str, Any]]:
+        """
+        Convert all center points from normalized format to pixel coordinates.
+
+        Gemini format: [x, y] (0-1000 normalized)
+        Output format: [x, y] (pixel coordinates)
+
+        Args:
+            results: List of step extraction results
+            image_width: Image width in pixels
+            image_height: Image height in pixels
+
+        Returns:
+            Updated results with center points converted to pixel coordinates
+        """
+        converted_count = 0
+
+        for step in results:
+            # Convert parts_required center_points
+            if "parts_required" in step:
+                for part in step["parts_required"]:
+                    if "center_point" in part and part["center_point"]:
+                        original_point = part["center_point"]
+                        pixel_point = self._convert_center_point_to_pixels(original_point, image_width, image_height)
+                        if pixel_point:
+                            part["center_point"] = pixel_point
+                            converted_count += 1
+                            logger.debug(f"Converted part center_point: {original_point} → {pixel_point}")
+
+            # Convert assembled_result_center
+            if "assembled_result_center" in step and step["assembled_result_center"]:
+                original_point = step["assembled_result_center"]
+                pixel_point = self._convert_center_point_to_pixels(original_point, image_width, image_height)
+                if pixel_point:
+                    step["assembled_result_center"] = pixel_point
+                    converted_count += 1
+                    logger.debug(f"Converted assembled center: {original_point} → {pixel_point}")
+
+        if converted_count > 0:
+            logger.info(f"✓ Converted {converted_count} center points from normalized (0-1000) to pixel coordinates")
+
+        return results
 
     def _convert_bboxes_to_pixels(
         self,
