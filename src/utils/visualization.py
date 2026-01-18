@@ -36,13 +36,21 @@ def visualize_center_points(
     img_pil = Image.open(image_path).convert("RGB")
     img_bgr = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
 
+    # Get image dimensions for coordinate conversion
+    height, width = img_bgr.shape[:2]
+
     # Draw parts_required center points
     parts_required = step_data.get("parts_required", [])
     for i, part in enumerate(parts_required):
         if "center_point" not in part or not part["center_point"]:
             continue
 
-        center = tuple(part["center_point"])
+        # Convert normalized coordinates (0-1000) to pixel coordinates
+        norm_x, norm_y = part["center_point"]
+        pixel_x = int((norm_x / 1000.0) * width)
+        pixel_y = int((norm_y / 1000.0) * height)
+        center = (pixel_x, pixel_y)
+
         color = part.get("color", "unknown")
         shape = part.get("shape", "unknown")
 
@@ -59,7 +67,11 @@ def visualize_center_points(
 
     # Draw assembled_result_center
     if "assembled_result_center" in step_data and step_data["assembled_result_center"]:
-        center = tuple(step_data["assembled_result_center"])
+        # Convert normalized coordinates (0-1000) to pixel coordinates
+        norm_x, norm_y = step_data["assembled_result_center"]
+        pixel_x = int((norm_x / 1000.0) * width)
+        pixel_y = int((norm_y / 1000.0) * height)
+        center = (pixel_x, pixel_y)
 
         # Draw center point
         cv2.circle(img_bgr, center, 8, (255, 0, 0), -1)  # Blue dot

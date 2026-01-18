@@ -26,6 +26,7 @@ class UnifiedVLMClient:
         config = get_config()
         self.model = model_name
         self.cache = get_cache()
+        self._prompt_manager = None  # Lazy loaded to avoid circular imports
 
         # Set API keys in environment for LiteLLM
         if config.api.openai_api_key:
@@ -45,6 +46,14 @@ class UnifiedVLMClient:
         litellm.drop_params = True  # Drop unsupported parameters
 
         logger.info(f"UnifiedVLMClient initialized with model: {self.model}")
+
+    @property
+    def prompt_manager(self):
+        """Lazy load PromptManager to avoid circular imports."""
+        if self._prompt_manager is None:
+            from app.vision.prompt_manager import get_prompt_manager
+            self._prompt_manager = get_prompt_manager()
+        return self._prompt_manager
 
     def extract_step_info(
         self,
@@ -361,71 +370,23 @@ class UnifiedVLMClient:
             return [{"error": str(e)}]
 
     def _build_extraction_prompt(self, step_number: Optional[int], use_json_mode: bool) -> str:
-        """Build extraction prompt that handles multiple steps per page."""
+        """Build extraction prompt using centralized PromptManager."""
         step_hint = f"Look for step {step_number} specifically. " if step_number else ""
 
-        prompt = f"""IMPORTANT: This page may contain ONE or MORE assembly steps. Analyze carefully and extract ALL steps shown.
-
-{step_hint}Return a JSON ARRAY containing ALL steps found on this page:
-
-[
-  {{
-    "step_number": <number or null>,
-    "parts_required": [
-      {{
-        "description": "part description",
-        "color": "color name",
-        "shape": "brick type and dimensions",
-        "part_id": "LEGO part ID if visible",
-        "quantity": <number>,
-        "center_point": [x, y]
-      }}
-    ],
-    "existing_assembly": "description of already assembled parts shown",
-    "new_parts_to_add": [
-      "description of each new part being added in this step"
-    ],
-    "actions": [
-      {{
-        "action_verb": "attach|connect|place|align|rotate",
-        "target": "what is being attached",
-        "destination": "where it's being attached",
-        "orientation": "directional cues"
-      }}
-    ],
-    "spatial_relationships": {{
+        # Build context for template substitution
+        context = {
+            "context_section": "",  # No build context for basic extraction
+            "task_description": f"IMPORTANT: This page may contain ONE or MORE assembly steps. Analyze carefully and extract ALL steps shown.\n\n{step_hint}",
+            "spatial_schema": """    "spatial_relationships": {
       "position": "top|bottom|left|right|front|back|center",
       "rotation": "rotation description if any",
       "alignment": "alignment instructions"
-    }},
-    "dependencies": "which previous steps are prerequisites",
-    "notes": "any special instructions or warnings",
-    "assembled_result_center": [x, y]
-  }}
-]
+    },
+"""
+        }
 
-CRITICAL INSTRUCTIONS - LOCATION COORDINATES:
-1. For each part in parts_required, provide "center_point": [x, y] indicating the CENTER of that part in the parts list/callout box
-2. For each step, provide "assembled_result_center": [x, y] indicating the CENTER of the assembled result shown
-3. Coordinates MUST be in normalized format from 0-1000:
-   - x=0 is leftmost edge, x=1000 is rightmost edge
-   - y=0 is topmost edge, y=1000 is bottommost edge
-   - Example: Center of image would be [500, 500]
-4. These center points help locate components for visual extraction
-
-GENERAL INSTRUCTIONS:
-1. Look carefully - the page may show 1, 2, or more steps
-2. Each step typically has a step number visible in the image
-3. Return ALL steps as an array, even if there's only one
-4. Keep descriptions concise (max 10-15 words per field)
-5. Focus on extracting semantic information: WHAT parts, WHAT colors, WHAT actions, and WHERE they are located
-6. Return ONLY the JSON array, no additional text
-
-FORMAT EXAMPLES:
-- Single step: [{{"step_number": 1, "parts_required": [{{"color": "brown", "shape": "2x3 brick", "quantity": 2, "center_point": [150, 80]}}], "assembled_result_center": [700, 400], ...}}]
-- Two steps: [{{"step_number": 1, ...}}, {{"step_number": 2, ...}}]"""
-
-        return prompt
+        # Use PromptManager to get the prompt with context
+        return self.prompt_manager.get_prompt("step_extraction", context=context)
 
     def _parse_response(self, response_text: str, use_json_mode: bool) -> Any:
         """Parse JSON response from VLM."""

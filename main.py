@@ -11,6 +11,10 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 from loguru import logger
 
+# IMPORTANT: Add backend to Python path BEFORE importing src modules
+# This allows src modules to import from app.vision.prompt_manager
+sys.path.insert(0, str(Path(__file__).parent / "backend"))
+
 from src.vision_processing import ManualInputHandler, VLMStepExtractor, DependencyGraph
 from src.vision_processing.user_metadata_collector import UserMetadataCollector
 from src.vision_processing.metadata_models import UserProvidedMetadata
@@ -28,7 +32,6 @@ from src.utils.visualization import (
 )
 
 # Import backend services for Phase 2
-sys.path.insert(0, str(Path(__file__).parent / "backend"))
 from app.ingestion.ingest_service import IngestionService
 
 class ProcessingCheckpoint:
@@ -160,9 +163,15 @@ def main(
         checkpoint.clear()
     
     # Step 1: Manual Input Processing
-    if not checkpoint.is_step_complete("page_extraction"):
+    temp_pages_dir = output_dir / "temp_pages"
+    temp_pages_exist = temp_pages_dir.exists() and list(temp_pages_dir.glob("page_*.png"))
+
+    if not checkpoint.is_step_complete("page_extraction") or not temp_pages_exist:
+        if not temp_pages_exist and checkpoint.is_step_complete("page_extraction"):
+            logger.warning("⚠ temp_pages missing despite checkpoint - re-extracting pages")
+
         logger.info("Step 1/7: Processing manual input...")
-        manual_handler = ManualInputHandler(output_dir=output_dir / "temp_pages")
+        manual_handler = ManualInputHandler(output_dir=temp_pages_dir)
 
         page_paths = manual_handler.process_manual(input_path)
         logger.info(f"Extracted {len(page_paths)} pages")
@@ -171,8 +180,8 @@ def main(
     else:
         logger.info("Step 1/7: ✓ Page extraction already complete (skipping)")
         # Load page paths from checkpoint
-        manual_handler = ManualInputHandler(output_dir=output_dir / "temp_pages")
-        page_paths = sorted(list((output_dir / "temp_pages").glob("page_*.png")))
+        manual_handler = ManualInputHandler(output_dir=temp_pages_dir)
+        page_paths = sorted(list(temp_pages_dir.glob("page_*.png")))
 
     # Step 2 (UPDATED): User-Provided Metadata Collection
     if not checkpoint.is_step_complete("metadata_collection"):

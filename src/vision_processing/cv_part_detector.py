@@ -1,20 +1,21 @@
 """
 Computer Vision-based Part Detector for Lego Instruction Manuals
 
-This module uses traditional computer vision techniques (color segmentation, contour detection)
-to detect Lego parts and assembled results in instruction manual images.
+This module uses edge detection and contour analysis to detect Lego parts and
+assembled results in instruction manual images.
 
 Designed specifically for Lego instruction manuals which have:
 - Clean, light blue backgrounds
-- Distinct part colors (brown, tan, gray, etc.)
-- Structured layout (parts box top-left, assembled result center/right)
+- High-contrast rendered parts
+- Structured layout with callout boxes for parts inventory
 - High-quality rendered images
 
 Approach:
-1. Color-based segmentation to find parts by color
-2. Contour detection to find distinct objects
-3. Spatial filtering based on Lego manual layout patterns
-4. Size filtering to distinguish parts from UI elements
+1. Detect callout boxes (light blue bordered boxes containing parts inventory)
+2. Edge detection (Canny) to find all object boundaries
+3. Contour detection to identify distinct objects
+4. Classify based on callout boxes: inside = parts, outside = assembled results
+5. Size filtering to distinguish parts from UI elements
 """
 
 import os
@@ -33,7 +34,7 @@ class DetectedPart:
     center: Tuple[int, int]  # (x, y)
     area: int
     contour: np.ndarray
-    color_name: str  # "brown", "tan", "gray", etc.
+    color_name: str  # Detected dominant color (for reference)
     region_type: str  # "parts_box" or "assembled_result"
     confidence: float  # 0.0 to 1.0
 
@@ -42,52 +43,16 @@ class CVPartDetector:
     """
     Computer Vision-based detector for Lego parts in instruction manuals.
 
-    Uses color segmentation and contour detection to find parts without
-    relying on VLM bounding boxes.
+    Uses edge detection and callout box analysis to find parts without
+    relying on VLM bounding boxes or color segmentation.
     """
-
-    # Lego part color ranges in HSV color space
-    # Format: {color_name: [(lower_bound, upper_bound), ...]}
-    # Multiple ranges handle color variations
-    COLOR_RANGES = {
-        "brown": [
-            (np.array([0, 50, 50]), np.array([20, 255, 200])),  # Reddish brown
-            (np.array([10, 100, 80]), np.array([20, 255, 180])),  # Standard brown
-        ],
-        "tan": [
-            (np.array([15, 30, 150]), np.array([35, 150, 255])),  # Light tan/beige
-            (np.array([20, 20, 180]), np.array([30, 100, 255])),  # Very light tan
-        ],
-        "gray": [
-            (np.array([0, 0, 80]), np.array([180, 30, 180])),  # Medium gray
-        ],
-        "dark_gray": [
-            (np.array([0, 0, 40]), np.array([180, 30, 100])),  # Dark gray
-        ],
-        "red": [
-            (np.array([0, 100, 100]), np.array([10, 255, 255])),
-            (np.array([170, 100, 100]), np.array([180, 255, 255])),
-        ],
-        "blue": [
-            (np.array([100, 100, 100]), np.array([130, 255, 255])),
-        ],
-        "yellow": [
-            (np.array([20, 100, 100]), np.array([30, 255, 255])),
-        ],
-        "green": [
-            (np.array([40, 100, 100]), np.array([80, 255, 255])),
-        ],
-    }
-
-    # Background color range (light blue) - to exclude
-    BACKGROUND_COLOR = [
-        (np.array([90, 10, 180]), np.array([120, 80, 255])),  # Light blue background
-    ]
 
     def __init__(
         self,
         min_part_area: int = 500,
         max_part_area: int = 100000,
+        canny_low: int = 30,
+        canny_high: int = 100,
         parts_box_region: Tuple[float, float, float, float] = (0.0, 0.0, 0.45, 0.35),
         assembled_region: Tuple[float, float, float, float] = (0.3, 0.2, 1.0, 1.0)
     ):
@@ -97,19 +62,22 @@ class CVPartDetector:
         Args:
             min_part_area: Minimum area in pixels for a valid part
             max_part_area: Maximum area in pixels for a valid part
-            parts_box_region: Region where parts box typically appears (x1, y1, x2, y2) as fractions
-            assembled_region: Region where assembled result appears (x1, y1, x2, y2) as fractions
+            canny_low: Lower threshold for Canny edge detection
+            canny_high: Upper threshold for Canny edge detection
+            parts_box_region: Fallback region for parts box (x1, y1, x2, y2) as fractions
+            assembled_region: Fallback region for assembled result (x1, y1, x2, y2) as fractions
         """
         self.min_part_area = min_part_area
         self.max_part_area = max_part_area
+        self.canny_low = canny_low
+        self.canny_high = canny_high
         self.parts_box_region = parts_box_region
         self.assembled_region = assembled_region
 
         logger.info(
-            f"Initialized CVPartDetector: "
+            f"Initialized CVPartDetector (edge-based): "
             f"area_range=[{min_part_area}, {max_part_area}]px, "
-            f"parts_box={parts_box_region}, "
-            f"assembled={assembled_region}"
+            f"canny=({canny_low}, {canny_high})"
         )
 
     def detect_parts(
@@ -119,12 +87,12 @@ class CVPartDetector:
         include_assembled: bool = True
     ) -> List[DetectedPart]:
         """
-        Detect Lego parts in an instruction manual image.
+        Detect Lego parts in an instruction manual image using edge detection.
 
         Args:
             image_path: Path to the instruction page image
-            target_colors: List of colors to detect (None = detect all)
-            include_assembled: Whether to detect assembled result
+            target_colors: Not used (kept for API compatibility)
+            include_assembled: Whether to include assembled result detections
 
         Returns:
             List of detected parts
@@ -133,38 +101,94 @@ class CVPartDetector:
         img_pil = Image.open(image_path).convert("RGB")
         img_bgr = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
         img_hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
+        img_gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
 
         height, width = img_bgr.shape[:2]
 
-        # Determine which colors to detect
-        colors_to_detect = target_colors if target_colors else list(self.COLOR_RANGES.keys())
+        # STEP 1: Detect callout boxes (light blue bordered boxes containing parts)
+        callout_boxes = self._detect_callout_boxes(img_bgr, img_hsv)
+        logger.debug(f"Found {len(callout_boxes)} callout boxes")
+
+        # STEP 2: Edge detection
+        blurred = cv2.GaussianBlur(img_gray, (5, 5), 0)
+        edges = cv2.Canny(blurred, self.canny_low, self.canny_high)
+
+        # Morphological operations to connect broken edges
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
+        edges = cv2.dilate(edges, kernel, iterations=1)
+
+        # STEP 3: Find contours (each contour represents a potential part)
+        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
         all_detections = []
 
-        # Detect parts for each color
-        for color_name in colors_to_detect:
-            if color_name not in self.COLOR_RANGES:
-                logger.warning(f"Unknown color: {color_name}, skipping")
+        # STEP 4: Process each contour
+        for contour in contours:
+            area = cv2.contourArea(contour)
+
+            # Filter by size
+            if area < self.min_part_area or area > self.max_part_area:
                 continue
 
-            detections = self._detect_color(
-                img_hsv, img_bgr, color_name, width, height, include_assembled
-            )
-            all_detections.extend(detections)
+            # Get bounding box
+            x, y, w, h = cv2.boundingRect(contour)
+            bbox = (x, y, x + w, y + h)
 
-        # Remove duplicates (same object detected in multiple colors)
+            # Calculate center
+            M = cv2.moments(contour)
+            if M["m00"] == 0:
+                continue
+            cx = int(M["m10"] / M["m00"])
+            cy = int(M["m01"] / M["m00"])
+            center = (cx, cy)
+
+            # Determine dominant color at this location (for reference)
+            color_name = self._determine_color(img_bgr, contour)
+
+            # Calculate confidence based on contour compactness
+            perimeter = cv2.arcLength(contour, True)
+            if perimeter == 0:
+                continue
+            compactness = 4 * np.pi * area / (perimeter * perimeter)
+            confidence = min(1.0, compactness * 0.7 + 0.3)
+
+            detection = DetectedPart(
+                bbox=bbox,
+                center=center,
+                area=int(area),
+                contour=contour,
+                color_name=color_name,
+                region_type="unknown",  # Will be classified next
+                confidence=confidence
+            )
+
+            all_detections.append(detection)
+
+        # STEP 5: Classify detections based on callout boxes
+        # Parts = inside callout boxes, Assembled = outside callout boxes
+        all_detections = self._classify_by_callout_boxes(all_detections, callout_boxes)
+
+        # Filter out callout box borders (they get detected as contours)
+        all_detections = self._filter_callout_box_borders(all_detections, callout_boxes)
+
+        # Filter out assembled results if not requested
+        if not include_assembled:
+            all_detections = [d for d in all_detections if d.region_type == "parts_box"]
+
+        # Remove duplicates (overlapping detections)
         all_detections = self._remove_duplicates(all_detections)
 
-        # Merge assembled result detections (tan + brown should be one object)
+        # Merge assembled result detections that are adjacent
         all_detections = self._merge_assembled_results(all_detections, img_bgr.shape[:2])
 
         # Sort by area (largest first)
         all_detections.sort(key=lambda d: d.area, reverse=True)
 
         logger.info(
-            f"Detected {len(all_detections)} parts in {image_path}: "
-            f"{sum(1 for d in all_detections if d.region_type == 'parts_box')} in parts box, "
-            f"{sum(1 for d in all_detections if d.region_type == 'assembled_result')} assembled results"
+            f"Detected {len(all_detections)} objects in {image_path}: "
+            f"{sum(1 for d in all_detections if d.region_type == 'parts_box')} parts, "
+            f"{sum(1 for d in all_detections if d.region_type == 'assembled_result')} assembled"
         )
 
         return all_detections
@@ -302,7 +326,7 @@ class CVPartDetector:
             area=int(area),
             contour=best_contour,
             color_name=color_name,
-            region_type="unknown",  # No longer using hardcoded regions
+            region_type="unknown",
             confidence=confidence
         )
 
@@ -322,7 +346,7 @@ class CVPartDetector:
             contour: Contour to analyze
 
         Returns:
-            Color name (e.g., "brown", "tan") or "unknown"
+            Color name (e.g., "brown", "tan", "white") or "unknown"
         """
         # Create mask for this contour
         mask = np.zeros(img_bgr.shape[:2], dtype=np.uint8)
@@ -334,163 +358,199 @@ class CVPartDetector:
         # Convert to HSV for color classification
         bgr_pixel = np.uint8([[mean_bgr]])
         hsv_pixel = cv2.cvtColor(bgr_pixel, cv2.COLOR_BGR2HSV)[0][0]
-
-        # Match to known color ranges
-        for color_name, ranges in self.COLOR_RANGES.items():
-            for lower, upper in ranges:
-                if np.all(hsv_pixel >= lower) and np.all(hsv_pixel <= upper):
-                    return color_name
-
-        # If no match, describe as general color category
         h, s, v = hsv_pixel
-        if s < 30:
-            if v > 180:
+
+        # Simple color classification based on HSV
+        if s < 30:  # Low saturation = grayscale
+            if v > 200:
                 return "white"
-            elif v < 80:
-                return "black"
-            else:
+            elif v > 140:
+                return "light_gray"
+            elif v > 80:
                 return "gray"
-        else:
-            # Return hue-based description
-            if h < 15 or h > 165:
-                return "red"
+            else:
+                return "dark_gray"
+        else:  # Saturated color
+            if h < 15:
+                return "red/brown"
             elif h < 30:
-                return "orange/tan"
+                return "tan/orange"
+            elif h < 45:
+                return "yellow"
             elif h < 80:
-                return "green/yellow"
+                return "green"
             elif h < 130:
                 return "blue"
+            elif h < 165:
+                return "purple"
             else:
-                return "purple/magenta"
+                return "red"
 
-    def _detect_color(
+    def _detect_callout_boxes(
         self,
-        img_hsv: np.ndarray,
         img_bgr: np.ndarray,
-        color_name: str,
-        width: int,
-        height: int,
-        include_assembled: bool
-    ) -> List[DetectedPart]:
+        img_hsv: np.ndarray
+    ) -> List[Tuple[int, int, int, int]]:
         """
-        Detect parts of a specific color.
+        Detect light blue callout boxes that contain part inventories.
+
+        These boxes have:
+        - Light blue fill color (similar to background)
+        - Darker blue/gray border
+        - Rectangular shape
 
         Args:
-            img_hsv: Image in HSV color space
-            img_bgr: Original image in BGR
-            color_name: Name of color to detect
-            width: Image width
-            height: Image height
-            include_assembled: Whether to include assembled region
+            img_bgr: Image in BGR format
+            img_hsv: Image in HSV format
 
         Returns:
-            List of detected parts for this color
+            List of bounding boxes (x1, y1, x2, y2) for callout boxes
         """
-        # Create mask for this color (combine all ranges)
-        color_mask = np.zeros(img_hsv.shape[:2], dtype=np.uint8)
+        # Convert to grayscale for edge detection
+        img_gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
 
-        for lower, upper in self.COLOR_RANGES[color_name]:
-            mask_range = cv2.inRange(img_hsv, lower, upper)
-            color_mask = cv2.bitwise_or(color_mask, mask_range)
+        # Edge detection to find borders
+        edges = cv2.Canny(img_gray, 30, 100)
 
-        # Exclude background color
-        background_mask = np.zeros(img_hsv.shape[:2], dtype=np.uint8)
-        for lower, upper in self.BACKGROUND_COLOR:
-            bg_range = cv2.inRange(img_hsv, lower, upper)
-            background_mask = cv2.bitwise_or(background_mask, bg_range)
-
-        color_mask = cv2.bitwise_and(color_mask, cv2.bitwise_not(background_mask))
-
-        # Morphological operations to clean up mask
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-        color_mask = cv2.morphologyEx(color_mask, cv2.MORPH_CLOSE, kernel)
-        color_mask = cv2.morphologyEx(color_mask, cv2.MORPH_OPEN, kernel)
+        # Morphological operations to connect edges into rectangles
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+        edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
+        edges = cv2.dilate(edges, kernel, iterations=1)
 
         # Find contours
-        contours, _ = cv2.findContours(color_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-        detections = []
+        callout_boxes = []
 
         for contour in contours:
-            area = cv2.contourArea(contour)
-
-            # Filter by size
-            if area < self.min_part_area or area > self.max_part_area:
-                continue
-
             # Get bounding box
             x, y, w, h = cv2.boundingRect(contour)
-            bbox = (x, y, x + w, y + h)
 
-            # Calculate center
-            M = cv2.moments(contour)
-            if M["m00"] == 0:
-                continue
-            cx = int(M["m10"] / M["m00"])
-            cy = int(M["m01"] / M["m00"])
-            center = (cx, cy)
+            # Filter by size (callout boxes are reasonably large but not full image)
+            area = w * h
+            image_area = img_bgr.shape[0] * img_bgr.shape[1]
 
-            # Determine region type
-            region_type = self._classify_region(cx, cy, width, height)
-
-            # Skip assembled result if not requested
-            if not include_assembled and region_type == "assembled_result":
+            # Callout boxes are typically 3-30% of image area
+            if area < 0.03 * image_area or area > 0.30 * image_area:
                 continue
 
-            # Calculate confidence based on area and compactness
-            perimeter = cv2.arcLength(contour, True)
-            if perimeter == 0:
+            # Check aspect ratio (callout boxes are wider than tall, but not extreme)
+            aspect_ratio = w / h if h > 0 else 0
+            if aspect_ratio < 1.2 or aspect_ratio > 5.0:
                 continue
-            compactness = 4 * np.pi * area / (perimeter * perimeter)
-            confidence = min(1.0, compactness * 0.7 + 0.3)  # Favor compact shapes
 
-            detection = DetectedPart(
-                bbox=bbox,
-                center=center,
-                area=area,
-                contour=contour,
-                color_name=color_name,
-                region_type=region_type,
-                confidence=confidence
-            )
+            # Check if the interior is light blue (callout box fill color)
+            # Sample the center region
+            cx, cy = x + w // 2, y + h // 2
+            sample_w, sample_h = w // 4, h // 4
+            x1_sample = max(0, cx - sample_w)
+            x2_sample = min(img_hsv.shape[1], cx + sample_w)
+            y1_sample = max(0, cy - sample_h)
+            y2_sample = min(img_hsv.shape[0], cy + sample_h)
 
-            detections.append(detection)
+            sample_region = img_hsv[y1_sample:y2_sample, x1_sample:x2_sample]
+
+            if sample_region.size == 0:
+                continue
+
+            # Get mean HSV values in the sample region
+            mean_hsv = cv2.mean(sample_region)[:3]
+            h_val, s_val, v_val = mean_hsv
+
+            # Light blue callout: H around 100-120, S low-medium, V high
+            # Background is also light blue, but callout boxes have borders
+            is_light_blue = (90 <= h_val <= 130) and (s_val < 100) and (v_val > 150)
+
+            if is_light_blue:
+                bbox = (x, y, x + w, y + h)
+                callout_boxes.append(bbox)
+                logger.debug(
+                    f"Detected callout box: {bbox}, area={area:.0f}px ({area/image_area*100:.1f}%), "
+                    f"aspect={aspect_ratio:.2f}, HSV=({h_val:.0f}, {s_val:.0f}, {v_val:.0f})"
+                )
+
+        return callout_boxes
+
+    def _classify_by_callout_boxes(
+        self,
+        detections: List[DetectedPart],
+        callout_boxes: List[Tuple[int, int, int, int]]
+    ) -> List[DetectedPart]:
+        """
+        Classify detections as parts_box or assembled_result based on callout boxes.
+
+        Rule: If detection center is INSIDE a callout box → parts_box
+              Otherwise → assembled_result
+
+        Args:
+            detections: List of detected parts
+            callout_boxes: List of callout box bounding boxes
+
+        Returns:
+            List of detections with updated region_type
+        """
+        for detection in detections:
+            cx, cy = detection.center
+
+            # Check if center point is inside any callout box
+            is_inside_callout = False
+
+            for callout_bbox in callout_boxes:
+                x1, y1, x2, y2 = callout_bbox
+                if x1 <= cx <= x2 and y1 <= cy <= y2:
+                    is_inside_callout = True
+                    break
+
+            # Update region type
+            if is_inside_callout:
+                detection.region_type = "parts_box"
+            else:
+                detection.region_type = "assembled_result"
 
         return detections
 
-    def _classify_region(self, cx: int, cy: int, width: int, height: int) -> str:
+    def _filter_callout_box_borders(
+        self,
+        detections: List[DetectedPart],
+        callout_boxes: List[Tuple[int, int, int, int]]
+    ) -> List[DetectedPart]:
         """
-        Classify whether a point is in the parts box or assembled result region.
+        Filter out detections that are likely callout box borders.
+
+        Callout box borders get detected as contours by edge detection.
+        We identify them by checking if a detection's bbox closely matches
+        a callout box bbox (indicating it's the border, not a part inside).
 
         Args:
-            cx: Center x coordinate
-            cy: Center y coordinate
-            width: Image width
-            height: Image height
+            detections: List of detected parts
+            callout_boxes: List of callout box bounding boxes
 
         Returns:
-            "parts_box" or "assembled_result"
+            Filtered list without callout box border detections
         """
-        # Normalize coordinates to 0-1
-        nx = cx / width
-        ny = cy / height
+        filtered = []
 
-        # Check if in parts box region
-        px1, py1, px2, py2 = self.parts_box_region
-        if px1 <= nx <= px2 and py1 <= ny <= py2:
-            return "parts_box"
+        for detection in detections:
+            is_callout_border = False
 
-        # Check if in assembled result region
-        ax1, ay1, ax2, ay2 = self.assembled_region
-        if ax1 <= nx <= ax2 and ay1 <= ny <= ay2:
-            return "assembled_result"
+            for callout_bbox in callout_boxes:
+                # Calculate IoU between detection bbox and callout box
+                iou = self._calculate_iou(detection.bbox, callout_bbox)
 
-        # Default to parts box if uncertain
-        return "parts_box"
+                # If IoU is very high (>0.8), this detection is likely the callout box border itself
+                if iou > 0.8:
+                    is_callout_border = True
+                    logger.debug(f"Filtering out callout box border: {detection.bbox} (IoU={iou:.2f})")
+                    break
+
+            if not is_callout_border:
+                filtered.append(detection)
+
+        return filtered
 
     def _remove_duplicates(self, detections: List[DetectedPart]) -> List[DetectedPart]:
         """
-        Remove duplicate detections (same object detected in multiple colors).
+        Remove duplicate detections (overlapping contours).
 
         Uses IoU (Intersection over Union) to identify overlapping detections.
 
@@ -532,7 +592,7 @@ class CVPartDetector:
         Merge overlapping/adjacent detections in the assembled_result region.
 
         This handles cases where a multi-colored assembled model is detected as
-        separate parts (e.g., tan base + brown top = one assembled model).
+        separate contours (e.g., tan base + brown top = one assembled model).
 
         Args:
             detections: List of all detections
@@ -827,12 +887,16 @@ def create_cv_detector_from_env() -> CVPartDetector:
     # Get configuration
     min_part_area = int(os.getenv("CV_MIN_PART_AREA", "500"))
     max_part_area = int(os.getenv("CV_MAX_PART_AREA", "100000"))
+    canny_low = int(os.getenv("CV_CANNY_LOW", "30"))
+    canny_high = int(os.getenv("CV_CANNY_HIGH", "100"))
 
-    logger.info(f"Creating CVPartDetector: area_range=[{min_part_area}, {max_part_area}]")
+    logger.info(f"Creating CVPartDetector: area_range=[{min_part_area}, {max_part_area}], canny=({canny_low}, {canny_high})")
 
     return CVPartDetector(
         min_part_area=min_part_area,
-        max_part_area=max_part_area
+        max_part_area=max_part_area,
+        canny_low=canny_low,
+        canny_high=canny_high
     )
 
 

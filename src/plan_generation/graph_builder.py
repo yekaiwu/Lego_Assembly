@@ -285,7 +285,7 @@ class SubassemblyDetector:
         if not self.enable_spatial_relationships:
             return "spatial analysis disabled"
 
-        spatial = step.get("spatial_relationships", {})
+        spatial = step.get("spatial_relationships") or {}
         position = spatial.get("position", "")
         orientation = spatial.get("rotation", "")
 
