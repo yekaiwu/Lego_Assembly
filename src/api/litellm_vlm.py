@@ -82,59 +82,29 @@ class UnifiedVLMClient:
             logger.debug(f"Cache hit for {self.model}")
             return cached
 
-        # Get image dimensions for bbox conversion
-        image_width, image_height = self._get_image_dimensions(image_paths[0] if image_paths else None)
-
         # Build prompt
         prompt = self._build_extraction_prompt(step_number, use_json_mode)
 
-        # DEBUG: Log the prompt to verify bbox instructions are included
         logger.debug(f"Extraction prompt (first 800 chars): {prompt[:800]}...")
 
         # Prepare messages with images
         content = [{"type": "text", "text": prompt}]
 
-        # Add images (resize to Gemini's dimensions for accurate bboxes)
+        # Add images
         for img_path in image_paths:
             import base64
             from pathlib import Path
-            from PIL import Image
-            import io
 
             path = Path(img_path)
             if not path.exists():
                 logger.error(f"Image not found: {img_path}")
                 continue
 
-            # Load image
-            img = Image.open(img_path)
-            orig_width, orig_height = img.size
+            # Encode image
+            with open(img_path, 'rb') as img_file:
+                image_data = base64.b64encode(img_file.read()).decode('utf-8')
 
-            # Resize to match Gemini's internal dimensions (1280x720 max, maintaining aspect ratio)
-            max_width = 1280
-            max_height = 720
-
-            # Calculate aspect ratio
-            aspect_ratio = orig_width / orig_height
-
-            # Determine target dimensions
-            if orig_width > max_width or orig_height > max_height:
-                if aspect_ratio > (max_width / max_height):
-                    # Width is limiting
-                    target_width = max_width
-                    target_height = int(max_width / aspect_ratio)
-                else:
-                    # Height is limiting
-                    target_height = max_height
-                    target_width = int(max_height * aspect_ratio)
-
-                # Resize image
-                img = img.resize((target_width, target_height), Image.Resampling.LANCZOS)
-                logger.debug(f"Resized image from {orig_width}x{orig_height} to {target_width}x{target_height} to match Gemini dimensions")
-            else:
-                logger.debug(f"Image {orig_width}x{orig_height} already fits within Gemini max size")
-
-            # Determine image format
+            # Determine mime type
             suffix = path.suffix.lower()
             mime_type = {
                 '.png': 'image/png',
@@ -144,16 +114,10 @@ class UnifiedVLMClient:
                 '.gif': 'image/gif'
             }.get(suffix, 'image/png')
 
-            # Save to bytes and encode
-            img_byte_arr = io.BytesIO()
-            img.save(img_byte_arr, format='PNG')
-            img_byte_arr = img_byte_arr.getvalue()
-            image_data = base64.b64encode(img_byte_arr).decode('utf-8')
-
             content.append({
                 "type": "image_url",
                 "image_url": {
-                    "url": f"data:image/png;base64,{image_data}"
+                    "url": f"data:{mime_type};base64,{image_data}"
                 }
             })
 
@@ -175,7 +139,6 @@ class UnifiedVLMClient:
                 logger.error("LiteLLM returned None content for step extraction")
                 return [{"error": "LiteLLM returned None content"}]
 
-            # DEBUG: Log raw response to check if bbox is present
             logger.debug(f"VLM raw response preview: {result_text[:500]}...")
 
             # Parse JSON response
@@ -183,9 +146,6 @@ class UnifiedVLMClient:
 
             # Normalize to array format
             normalized_result = self._normalize_to_array(result)
-
-            # Convert center points from normalized (0-1000) to pixel coordinates
-            normalized_result = self._convert_center_points_to_pixels(normalized_result, image_width, image_height)
 
             # Cache result
             self.cache.set(self.model, cache_key, normalized_result, image_paths)
@@ -195,62 +155,6 @@ class UnifiedVLMClient:
         except Exception as e:
             logger.error(f"LiteLLM API call failed: {e}")
             return [{"error": str(e)}]
-
-    def _get_image_dimensions(self, image_path: Optional[str]) -> tuple:
-        """
-        Get image dimensions that Gemini API uses for bbox conversion.
-
-        IMPORTANT: The Gemini API resizes images internally. The bboxes it returns are
-        relative to the RESIZED dimensions, not the original image dimensions.
-
-        Based on testing, Gemini appears to resize images to fit within 1280x720 while
-        maintaining aspect ratio.
-
-        Args:
-            image_path: Path to image file
-
-        Returns:
-            Tuple of (width, height) that Gemini uses for bboxes
-        """
-        if not image_path:
-            logger.warning("No image path provided for dimension detection, using Gemini default 1280x720")
-            return (1280, 720)
-
-        try:
-            from PIL import Image
-            img = Image.open(image_path)
-            orig_width, orig_height = img.size
-
-            # Gemini appears to resize images to fit within a max size while maintaining aspect ratio
-            # Based on empirical testing: max_width=1280, max_height=720
-            max_width = 1280
-            max_height = 720
-
-            # Calculate aspect ratio
-            aspect_ratio = orig_width / orig_height
-
-            # Determine Gemini's resized dimensions
-            if orig_width > max_width or orig_height > max_height:
-                # Image needs resizing
-                if aspect_ratio > (max_width / max_height):
-                    # Width is the limiting factor
-                    gemini_width = max_width
-                    gemini_height = int(max_width / aspect_ratio)
-                else:
-                    # Height is the limiting factor
-                    gemini_height = max_height
-                    gemini_width = int(max_height * aspect_ratio)
-
-                logger.debug(f"Image {orig_width}x{orig_height} -> Gemini resizes to {gemini_width}x{gemini_height}")
-                return (gemini_width, gemini_height)
-            else:
-                # Image fits within max size, no resizing
-                logger.debug(f"Image {orig_width}x{orig_height} fits within Gemini max size")
-                return (orig_width, orig_height)
-
-        except Exception as e:
-            logger.warning(f"Could not read image dimensions from {image_path}: {e}. Using Gemini default 1280x720")
-            return (1280, 720)
 
     def extract_step_info_with_context(
         self,
@@ -278,61 +182,36 @@ class UnifiedVLMClient:
         if cached:
             return cached
 
-        # Get image dimensions for bbox conversion
-        image_width, image_height = self._get_image_dimensions(image_paths[0] if image_paths else None)
-
-        # Prepare messages with images (resize to Gemini's dimensions for accurate bboxes)
+        # Prepare messages with images
         content = [{"type": "text", "text": custom_prompt}]
 
         # Add images
         for img_path in image_paths:
             import base64
             from pathlib import Path
-            from PIL import Image
-            import io
 
             path = Path(img_path)
             if not path.exists():
                 continue
 
-            # Load image
-            img = Image.open(img_path)
-            orig_width, orig_height = img.size
+            # Encode image
+            with open(img_path, 'rb') as img_file:
+                image_data = base64.b64encode(img_file.read()).decode('utf-8')
 
-            # Resize to match Gemini's internal dimensions (1280x720 max, maintaining aspect ratio)
-            max_width = 1280
-            max_height = 720
-
-            # Calculate aspect ratio
-            aspect_ratio = orig_width / orig_height
-
-            # Determine target dimensions
-            if orig_width > max_width or orig_height > max_height:
-                if aspect_ratio > (max_width / max_height):
-                    # Width is limiting
-                    target_width = max_width
-                    target_height = int(max_width / aspect_ratio)
-                else:
-                    # Height is limiting
-                    target_height = max_height
-                    target_width = int(max_height * aspect_ratio)
-
-                # Resize image
-                img = img.resize((target_width, target_height), Image.Resampling.LANCZOS)
-                logger.debug(f"Resized image from {orig_width}x{orig_height} to {target_width}x{target_height} to match Gemini dimensions")
-            else:
-                logger.debug(f"Image {orig_width}x{orig_height} already fits within Gemini max size")
-
-            # Save to bytes and encode
-            img_byte_arr = io.BytesIO()
-            img.save(img_byte_arr, format='PNG')
-            img_byte_arr = img_byte_arr.getvalue()
-            image_data = base64.b64encode(img_byte_arr).decode('utf-8')
+            # Determine mime type
+            suffix = path.suffix.lower()
+            mime_type = {
+                '.png': 'image/png',
+                '.jpg': 'image/jpeg',
+                '.jpeg': 'image/jpeg',
+                '.webp': 'image/webp',
+                '.gif': 'image/gif'
+            }.get(suffix, 'image/png')
 
             content.append({
                 "type": "image_url",
                 "image_url": {
-                    "url": f"data:image/png;base64,{image_data}"
+                    "url": f"data:{mime_type};base64,{image_data}"
                 }
             })
 
@@ -356,9 +235,6 @@ class UnifiedVLMClient:
 
             result = self._parse_response(result_text, use_json_mode=True)
             normalized_result = self._normalize_to_array(result)
-
-            # Convert center points from normalized (0-1000) to pixel coordinates
-            normalized_result = self._convert_center_points_to_pixels(normalized_result, image_width, image_height)
 
             # Cache result
             self.cache.set(self.model, cache_key, normalized_result, image_paths)
@@ -429,205 +305,6 @@ class UnifiedVLMClient:
             return [result]
         else:
             return [{"error": "Invalid result format", "raw": str(result)}]
-
-    def _convert_box_2d_to_bbox(self, box_2d: List[int], image_width: int = None, image_height: int = None) -> List[int]:
-        """
-        Convert Gemini Robotics ER box_2d format to pixel bbox.
-
-        Gemini format: [y_min, x_min, y_max, x_max] in normalized coords (0-1000)
-        Output format: [x1, y1, x2, y2] in pixel coords
-
-        Args:
-            box_2d: Normalized coordinates [y_min, x_min, y_max, x_max]
-            image_width: Image width in pixels (if None, assumes 1000x1000)
-            image_height: Image height in pixels (if None, assumes 1000x1000)
-
-        Returns:
-            Pixel coordinates [x1, y1, x2, y2]
-        """
-        if not box_2d or len(box_2d) != 4:
-            return None
-
-        y_min, x_min, y_max, x_max = box_2d
-
-        # Use default dimensions if not provided
-        width = image_width or 1000
-        height = image_height or 1000
-
-        # Convert from normalized (0-1000) to pixels
-        x1 = int((x_min / 1000.0) * width)
-        y1 = int((y_min / 1000.0) * height)
-        x2 = int((x_max / 1000.0) * width)
-        y2 = int((y_max / 1000.0) * height)
-
-        return [x1, y1, x2, y2]
-
-    def _convert_center_point_to_pixels(self, center_point: List[int], image_width: int = None, image_height: int = None) -> List[int]:
-        """
-        Convert center point from normalized coordinates to pixel coordinates.
-
-        Gemini format: [x, y] in normalized coords (0-1000)
-        Output format: [x, y] in pixel coords
-
-        Args:
-            center_point: Normalized coordinates [x, y] in range 0-1000
-            image_width: Image width in pixels (if None, assumes 1000)
-            image_height: Image height in pixels (if None, assumes 1000)
-
-        Returns:
-            Pixel coordinates [x, y] or None if invalid
-        """
-        if not center_point or len(center_point) != 2:
-            return None
-
-        x_norm, y_norm = center_point
-
-        # Use default dimensions if not provided
-        width = image_width or 1000
-        height = image_height or 1000
-
-        # Convert from normalized (0-1000) to pixels
-        x = int((x_norm / 1000.0) * width)
-        y = int((y_norm / 1000.0) * height)
-
-        return [x, y]
-
-    def _convert_center_points_to_pixels(
-        self,
-        results: List[Dict[str, Any]],
-        image_width: int,
-        image_height: int
-    ) -> List[Dict[str, Any]]:
-        """
-        Convert all center points from normalized format to pixel coordinates.
-
-        Gemini format: [x, y] (0-1000 normalized)
-        Output format: [x, y] (pixel coordinates)
-
-        Args:
-            results: List of step extraction results
-            image_width: Image width in pixels
-            image_height: Image height in pixels
-
-        Returns:
-            Updated results with center points converted to pixel coordinates
-        """
-        converted_count = 0
-
-        for step in results:
-            # Convert parts_required center_points
-            if "parts_required" in step:
-                for part in step["parts_required"]:
-                    if "center_point" in part and part["center_point"]:
-                        original_point = part["center_point"]
-                        pixel_point = self._convert_center_point_to_pixels(original_point, image_width, image_height)
-                        if pixel_point:
-                            part["center_point"] = pixel_point
-                            converted_count += 1
-                            logger.debug(f"Converted part center_point: {original_point} → {pixel_point}")
-
-            # Convert assembled_result_center
-            if "assembled_result_center" in step and step["assembled_result_center"]:
-                original_point = step["assembled_result_center"]
-                pixel_point = self._convert_center_point_to_pixels(original_point, image_width, image_height)
-                if pixel_point:
-                    step["assembled_result_center"] = pixel_point
-                    converted_count += 1
-                    logger.debug(f"Converted assembled center: {original_point} → {pixel_point}")
-
-        if converted_count > 0:
-            logger.info(f"✓ Converted {converted_count} center points from normalized (0-1000) to pixel coordinates")
-
-        return results
-
-    def _convert_bboxes_to_pixels(
-        self,
-        results: List[Dict[str, Any]],
-        image_width: int,
-        image_height: int
-    ) -> List[Dict[str, Any]]:
-        """
-        Convert all bboxes from Gemini Robotics ER normalized format to pixel coordinates.
-
-        Gemini format: [y_min, x_min, y_max, x_max] (0-1000 normalized)
-        Output format: [x1, y1, x2, y2] (pixel coordinates)
-
-        Args:
-            results: List of step extraction results
-            image_width: Image width in pixels
-            image_height: Image height in pixels
-
-        Returns:
-            Updated results with bboxes converted to pixel coordinates
-        """
-        converted_count = 0
-
-        for step in results:
-            # Convert parts_required bboxes
-            if "parts_required" in step:
-                for part in step["parts_required"]:
-                    if "bbox" in part and part["bbox"]:
-                        original_bbox = part["bbox"]
-                        pixel_bbox = self._convert_box_2d_to_bbox(original_bbox, image_width, image_height)
-                        if pixel_bbox:
-                            part["bbox"] = pixel_bbox
-                            converted_count += 1
-                            logger.debug(f"Converted part bbox: {original_bbox} → {pixel_bbox}")
-
-            # Convert assembled_result_bbox
-            if "assembled_result_bbox" in step and step["assembled_result_bbox"]:
-                original_bbox = step["assembled_result_bbox"]
-                pixel_bbox = self._convert_box_2d_to_bbox(original_bbox, image_width, image_height)
-                if pixel_bbox:
-                    step["assembled_result_bbox"] = pixel_bbox
-                    converted_count += 1
-                    logger.debug(f"Converted assembled bbox: {original_bbox} → {pixel_bbox}")
-
-        if converted_count > 0:
-            logger.info(f"✓ Converted {converted_count} bboxes from normalized (0-1000) to pixel coordinates")
-
-        return results
-
-    def _ensure_bbox_fields(self, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        Ensure all parts have bbox fields.
-
-        Args:
-            results: List of step extraction results
-
-        Returns:
-            Updated results with bbox fields guaranteed for all parts
-        """
-        bbox_missing_count = 0
-        bbox_present_count = 0
-
-        for step in results:
-            if "parts_required" in step:
-                for part in step["parts_required"]:
-                    if "bbox" in part and part["bbox"]:
-                        # Validate bbox format
-                        if isinstance(part["bbox"], list) and len(part["bbox"]) == 4:
-                            bbox_present_count += 1
-                        else:
-                            logger.warning(f"Invalid bbox format: {part['bbox']}")
-                            part["bbox"] = None
-                            bbox_missing_count += 1
-                    else:
-                        # No bbox - add null placeholder
-                        part["bbox"] = None
-                        bbox_missing_count += 1
-
-        total_parts = bbox_missing_count + bbox_present_count
-        if total_parts > 0:
-            if bbox_missing_count > 0:
-                logger.warning(
-                    f"VLM did not provide bboxes for {bbox_missing_count}/{total_parts} parts "
-                    f"({bbox_missing_count/total_parts*100:.1f}%). SAM will use auto-segmentation fallback."
-                )
-            else:
-                logger.info(f"✓ VLM provided bboxes for all {bbox_present_count} parts")
-
-        return results
 
     def generate_text_description(
         self,

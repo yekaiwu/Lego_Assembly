@@ -77,12 +77,42 @@ class ProcessingConfig(BaseModel):
         default_factory=lambda: os.getenv("ENABLE_SPATIAL_RELATIONSHIPS", "true").lower() == "true"
     )
 
+class RoboflowConfig(BaseModel):
+    """Roboflow SAM3 API configuration."""
+    enabled: bool = Field(
+        default_factory=lambda: os.getenv("ENABLE_ROBOFLOW_SAM3", "false").lower() == "true"
+    )
+    api_key: str = Field(default_factory=lambda: os.getenv("ROBOFLOW_API_KEY", ""))
+    sam3_confidence_threshold: float = Field(
+        default_factory=lambda: float(os.getenv("ROBOFLOW_SAM3_CONFIDENCE_THRESHOLD", "0.7"))
+    )
+    sam3_output_dir: str = Field(
+        default_factory=lambda: os.getenv("ROBOFLOW_SAM3_OUTPUT_DIR", "./output/segmented_parts")
+    )
+    sam3_save_masks: bool = Field(
+        default_factory=lambda: os.getenv("ROBOFLOW_SAM3_SAVE_MASKS", "true").lower() == "true"
+    )
+    sam3_save_cropped_images: bool = Field(
+        default_factory=lambda: os.getenv("ROBOFLOW_SAM3_SAVE_CROPPED_IMAGES", "true").lower() == "true"
+    )
+    sam3_output_format: str = Field(
+        default_factory=lambda: os.getenv("ROBOFLOW_SAM3_OUTPUT_FORMAT", "json")
+    )
+    # Retry settings for failed segmentations
+    sam3_retry_enabled: bool = Field(
+        default_factory=lambda: os.getenv("SAM3_RETRY_ENABLED", "true").lower() == "true"
+    )
+    sam3_retry_vlm: str = Field(
+        default_factory=lambda: os.getenv("SAM3_RETRY_VLM", "gemini/gemini-robotics-er-1.5-preview")
+    )
+
 class SystemConfig(BaseModel):
     """Overall system configuration."""
     api: APIConfig = Field(default_factory=APIConfig)
     models: ModelConfig = Field(default_factory=ModelConfig)
     paths: PathConfig = Field(default_factory=PathConfig)
     processing: ProcessingConfig = Field(default_factory=ProcessingConfig)
+    roboflow: RoboflowConfig = Field(default_factory=RoboflowConfig)
     cache_enabled: bool = Field(default_factory=lambda: os.getenv("CACHE_ENABLED", "true").lower() == "true")  # Enabled by default to prevent data loss
 
 # Global config instance

@@ -23,13 +23,7 @@ from src.vision_processing.document_analyzer import (
     extract_relevant_pages
 )
 from src.plan_generation import PlanStructureGenerator, GraphBuilder
-from src.plan_generation.component_extractor import create_component_extractor
 from src.utils import get_config, URLHandler
-from src.utils.visualization import (
-    visualize_all_center_points,
-    create_extraction_summary_image,
-    log_component_extraction_results
-)
 
 # Import backend services for Phase 2
 from app.ingestion.ingest_service import IngestionService
@@ -114,7 +108,10 @@ def main(
     logger.info("=" * 80)
     logger.info("LEGO Assembly System - Complete Workflow")
     logger.info("=" * 80)
-    
+
+    # Load configuration
+    config = get_config()
+
     # Setup
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -328,6 +325,74 @@ def main(
 
         logger.info("")
 
+        # Step 3.5: SAM3 Segmentation (Optional)
+        if config.roboflow.enabled:
+            logger.info("Step 3.5/7: Running SAM3 segmentation on extracted steps...")
+
+            try:
+                from src.vision_processing.roboflow_sam3_segmenter import RoboflowSAM3Segmenter
+
+                # Initialize segmenter
+                segmenter = RoboflowSAM3Segmenter(
+                    api_key=config.roboflow.api_key,
+                    confidence_threshold=config.roboflow.sam3_confidence_threshold,
+                    output_dir=config.roboflow.sam3_output_dir,
+                    save_masks=config.roboflow.sam3_save_masks,
+                    save_cropped_images=config.roboflow.sam3_save_cropped_images,
+                    output_format=config.roboflow.sam3_output_format,
+                    retry_vlm=config.roboflow.sam3_retry_vlm,
+                    retry_enabled=config.roboflow.sam3_retry_enabled
+                )
+
+                logger.info(f"Processing {len(extracted_steps)} steps with SAM3...")
+
+                # Segment each step
+                for i, step in enumerate(extracted_steps):
+                    step_number = step.get("step_number", i + 1)
+                    image_paths = step.get("_source_page_paths", [])
+
+                    if not image_paths:
+                        logger.warning(f"  Step {step_number}: No source image path found")
+                        continue
+
+                    image_path = image_paths[0]  # Use first image path
+
+                    try:
+                        logger.info(f"  Segmenting step {step_number}...")
+                        segmented_step = segmenter.process_step(
+                            image_path=image_path,
+                            extracted_step=step,
+                            assembly_id=assembly_id
+                        )
+
+                        # Update step with segmentation data
+                        extracted_steps[i] = segmented_step
+
+                        # Count parts with successful segmentation (have bounding_box)
+                        parts_list = segmented_step.get("parts_required", [])
+                        parts_segmented = sum(1 for p in parts_list if p.get("bounding_box"))
+
+                        # Check if assembly was segmented (has bounding_box)
+                        assembled_product = segmented_step.get("assembled_product", {})
+                        assembly_ok = "✓" if isinstance(assembled_product, dict) and assembled_product.get("bounding_box") else "✗"
+
+                        logger.info(f"    ✓ Parts: {parts_segmented}/{len(parts_list)}, Assembly: {assembly_ok}")
+
+                    except Exception as e:
+                        logger.warning(f"    ✗ SAM3 segmentation failed for step {step_number}: {e}")
+                        # Continue pipeline without segmentation data for this step
+
+                logger.info("✓ SAM3 segmentation complete")
+                logger.info("")
+
+            except Exception as e:
+                logger.error(f"Failed to initialize SAM3 segmenter: {e}")
+                logger.warning("Continuing without segmentation data")
+                logger.info("")
+        else:
+            logger.info("Step 3.5/7: SAM3 segmentation disabled (ENABLE_ROBOFLOW_SAM3=false)")
+            logger.info("")
+
         # Save final extracted data
         extracted_path = output_dir / f"{assembly_id}_extracted.json"
         with open(extracted_path, 'w', encoding='utf-8') as f:
@@ -338,14 +403,6 @@ def main(
         if temp_extracted_path.exists():
             temp_extracted_path.unlink()
             logger.debug("Removed temporary extraction file")
-
-        # NEW: Visualize center points for debugging
-        logger.info("Creating center point visualizations for debugging...")
-        viz_paths = visualize_all_center_points(extracted_steps, str(output_dir))
-        if viz_paths:
-            logger.info(f"✓ Created {len(viz_paths)} center point visualizations")
-            logger.info(f"  View them in: {output_dir}/center_point_visualizations/")
-        logger.info("")
 
         checkpoint.save("step_extraction")
     else:
@@ -390,17 +447,6 @@ def main(
     if not checkpoint.is_step_complete("hierarchical_graph"):
         logger.info("Step 5/7: Building hierarchical assembly graph (Phase 2)...")
 
-        # Create component extractor for SAM-based image extraction
-        component_extractor = create_component_extractor(
-            output_dir=str(output_dir),
-            manual_id=assembly_id
-        )
-
-        if component_extractor.is_enabled():
-            logger.info("SAM component extraction: ENABLED")
-        else:
-            logger.info("SAM component extraction: DISABLED")
-
         graph_builder = GraphBuilder(
             enable_spatial_relationships=enable_spatial_relationships
         )
@@ -408,31 +454,15 @@ def main(
         hierarchical_graph = graph_builder.build_graph(
             extracted_steps=extracted_steps,
             assembly_id=assembly_id,
-            image_dir=output_dir / "temp_pages",
-            component_extractor=component_extractor
+            image_dir=output_dir / "temp_pages"
         )
 
         # Save hierarchical graph
         hierarchical_graph_path = output_dir / f"{assembly_id}_graph.json"
         graph_builder.save_graph(hierarchical_graph, hierarchical_graph_path)
 
-        # Log extraction summary
-        if component_extractor.is_enabled():
-            # Detailed component extraction logging
-            log_component_extraction_results(component_extractor, str(output_dir))
-
-            # Create summary visualization
-            summary_img_path = output_dir / "component_extraction_summary.png"
-            summary_path = create_extraction_summary_image(
-                component_extractor,
-                str(summary_img_path)
-            )
-            if summary_path:
-                logger.info(f"✓ Component summary image: {summary_path}")
-
         logger.info(f"Hierarchical graph: {hierarchical_graph['metadata']['total_parts']} parts, "
                     f"{hierarchical_graph['metadata']['total_subassemblies']} subassemblies")
-        logger.info(f"  (Enhanced with context-aware extraction hints)")
         logger.info("")
 
         checkpoint.save("hierarchical_graph")
@@ -607,13 +637,38 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     
-    # Configure logging
+    # Configure logging (console + file)
     logger.remove()
+
+    # Console output
     logger.add(
         lambda msg: print(msg, end=""),
         level=args.log_level,
         format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | <level>{message}</level>"
     )
+
+    # File output (save detailed logs)
+    output_dir = Path(args.output)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Use assembly_id if provided, otherwise use generic name
+    if args.assembly_id:
+        log_filename = f"{args.assembly_id}_processing.log"
+    elif args.input:
+        # Extract filename from input path
+        input_name = Path(args.input).stem if not (args.input.startswith('http://') or args.input.startswith('https://')) else "manual"
+        log_filename = f"{input_name}_processing.log"
+    else:
+        log_filename = "processing.log"
+
+    log_file_path = output_dir / log_filename
+    logger.add(
+        log_file_path,
+        level="DEBUG",  # Save all details to file
+        format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {message}",
+        rotation="10 MB"  # Rotate if file gets too large
+    )
+    logger.info(f"Logging to file: {log_file_path}")
     
     # Handle cache settings (disabled by default)
     if args.cache:

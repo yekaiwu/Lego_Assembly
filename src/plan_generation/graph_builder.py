@@ -29,8 +29,7 @@ class SubassemblyDetector:
         extracted_steps: List[Dict[str, Any]],
         part_catalog: Dict[str, Any],
         manual_pages: List[str],
-        assembly_id: str,
-        component_extractor=None
+        assembly_id: str
     ) -> List[Dict[str, Any]]:
         """
         Detect subassemblies across all steps.
@@ -41,7 +40,6 @@ class SubassemblyDetector:
             part_catalog: Part catalog dictionary
             manual_pages: List of paths to manual page images
             assembly_id: Assembly identifier
-            component_extractor: Optional ComponentExtractor for extracting subassembly images
 
         Returns:
             List of subassembly definitions
@@ -73,8 +71,7 @@ class SubassemblyDetector:
                 parts=parts_in_step,
                 previous_subassembly=previous_step_subassembly,
                 manual_page=manual_page,
-                assembly_id=assembly_id,
-                component_extractor=component_extractor
+                assembly_id=assembly_id
             )
 
             if subassembly:
@@ -98,8 +95,7 @@ class SubassemblyDetector:
         parts: List[Dict[str, Any]],
         previous_subassembly: Optional[str],
         manual_page: Optional[str],
-        assembly_id: str,
-        component_extractor=None
+        assembly_id: str
     ) -> Dict[str, Any]:
         """
         Create a subassembly node for this step.
@@ -149,6 +145,9 @@ class SubassemblyDetector:
                 parent_subassembly = previous_subassembly
                 logger.debug(f"Step {step_number}: Default sequential link to {previous_subassembly}")
 
+        # Extract SAM3 assembled result data if available
+        assembled_result = step.get("assembled_result", {})
+
         # Create subassembly definition
         subassembly = {
             "name": subasm_name,
@@ -163,22 +162,12 @@ class SubassemblyDetector:
                 "required_parts": len(component_parts),
                 "required_connections": self._extract_connections(actions),
                 "spatial_signature": self._extract_spatial_signature(step)
-            }
+            },
+            # SAM3 segmentation data from assembled result (if available)
+            "cropped_image_path": assembled_result.get("cropped_image_path") if assembled_result else None,
+            "mask_path": assembled_result.get("mask_path") if assembled_result else None,
+            "bounding_box": assembled_result.get("bounding_box") if assembled_result else None
         }
-
-        # Extract subassembly image (if CV detector is enabled)
-        if component_extractor and component_extractor.is_enabled() and manual_page:
-            subasm_id = f"step_{step_number}"
-
-            # Pass the VLM step data which contains assembled_result_center
-            image_path = component_extractor.extract_subassembly_image(
-                subassembly_id=subasm_id,
-                page_path=manual_page,
-                subassembly_data=step  # Pass VLM step data with assembled_result_center
-            )
-            if image_path:
-                subassembly["image_path"] = image_path
-                logger.debug(f"✓ Extracted subassembly image for step {step_number}: {image_path}")
 
         return subassembly
 
@@ -298,30 +287,6 @@ class SubassemblyDetector:
 
         return "standard arrangement"
 
-    def _get_assembled_result_bbox(self, step: Dict[str, Any]) -> Optional[Tuple[int, int, int, int]]:
-        """
-        Extract assembled result bounding box from VLM step data.
-
-        Args:
-            step: Step dictionary from VLM extraction
-
-        Returns:
-            Bounding box (x1, y1, x2, y2) or None if not found
-        """
-        bbox = step.get("assembled_result_bbox")
-
-        if bbox and isinstance(bbox, list) and len(bbox) == 4:
-            # Validate bbox values
-            x1, y1, x2, y2 = bbox
-            if all(isinstance(v, (int, float)) for v in bbox) and x2 > x1 and y2 > y1:
-                logger.debug(f"Found assembled result bbox for step {step.get('step_number')}: {bbox}")
-                return tuple(int(v) for v in bbox)
-            else:
-                logger.warning(f"Invalid assembled result bbox for step {step.get('step_number')}: {bbox}")
-
-        logger.debug(f"No assembled result bbox found for step {step.get('step_number')}, SAM will use auto-segmentation")
-        return None
-
 
 class StepStateTracker:
     """Tracks assembly state at each step."""
@@ -440,8 +405,7 @@ class GraphBuilder:
         self,
         extracted_steps: List[Dict[str, Any]],
         assembly_id: str,
-        image_dir: Path,
-        component_extractor=None
+        image_dir: Path
     ) -> Dict[str, Any]:
         """
         Build complete hierarchical graph.
@@ -450,7 +414,6 @@ class GraphBuilder:
             extracted_steps: Previously extracted step data
             assembly_id: Assembly identifier
             image_dir: Directory with manual page images
-            component_extractor: Optional ComponentExtractor for extracting component images
 
         Returns:
             Complete hierarchical graph structure
@@ -469,8 +432,7 @@ class GraphBuilder:
         part_catalog = self.part_association.build_part_catalog(
             extracted_steps=extracted_steps,
             manual_pages=[str(p) for p in manual_pages],
-            assembly_id=assembly_id,
-            component_extractor=component_extractor
+            assembly_id=assembly_id
         )
 
         # Stage 2: Subassembly Detection
@@ -479,8 +441,7 @@ class GraphBuilder:
             extracted_steps=extracted_steps,
             part_catalog=part_catalog,
             manual_pages=[str(p) for p in manual_pages],
-            assembly_id=assembly_id,
-            component_extractor=component_extractor
+            assembly_id=assembly_id
         )
         
         # Build graph structure
@@ -561,7 +522,10 @@ class GraphBuilder:
                 "parents": [],
                 "step_created": part_data.get("first_appears_step", 1),
                 "layer": None,  # Will be set later
-                "image_path": part_data.get("image_path")  # Path to extracted part image
+                # SAM3 segmentation data
+                "image_path": part_data.get("cropped_image_path"),
+                "mask_path": part_data.get("mask_path"),
+                "bounding_box": part_data.get("bounding_box")
             }
             nodes.append(part_node)
         
@@ -577,7 +541,10 @@ class GraphBuilder:
                 "step_created": subasm["created_in_step"],
                 "layer": None,  # Will be set later
                 "completeness_markers": subasm.get("completeness_markers", {}),
-                "image_path": subasm.get("image_path")  # Path to extracted subassembly image
+                # SAM3 segmentation data
+                "image_path": subasm.get("cropped_image_path"),
+                "mask_path": subasm.get("mask_path"),
+                "bounding_box": subasm.get("bounding_box")
             }
             nodes.append(subasm_node)
         

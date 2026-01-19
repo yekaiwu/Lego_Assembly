@@ -2,7 +2,9 @@
 
 Get the complete Vision-Enhanced RAG system running in 10 minutes.
 
-**NEW in 2.2**:
+**NEW in 2.3**:
+- ✅ **✂️ SAM3 Integration** - Pixel-perfect part segmentation with Meta's SAM3 model
+- ✅ **🖼️ Visual Graph References** - Parts and subassemblies now include cropped images
 - ✅ **Phase 0: Document Understanding** - Smart page filtering (10-15% fewer API calls)
 - ✅ **Phase 1: Context-Aware Extraction** - Sliding window + long-term memory
 - ✅ **Enhanced subassembly detection** (20-30% better accuracy with context)
@@ -14,16 +16,17 @@ Get the complete Vision-Enhanced RAG system running in 10 minutes.
 - ✅ 🧠 **Hierarchical assembly graph** (parts → subassemblies → model)
 - ✅ **Graph-enhanced retrieval** for structural queries
 - ✅ **Subassembly detection** from user photos
-- ✅ 🖼️ **SAM Component Extraction** - Automatic segmentation and extraction of part/subassembly images
 
 ---
 
 ## 📋 Prerequisites
 
 **Required**:
-- Python 3.9+ with `uv`
+- Python 3.12+ with `uv`
 - Node.js 18+ and npm
 - Poppler (for PDF processing)
+- CUDA-capable GPU (recommended for SAM3) or CPU
+- HuggingFace account (for SAM3 model access)
 - At least one API key: Qwen (recommended), DeepSeek, or Moonshot
 
 **Install Tools**:
@@ -74,11 +77,13 @@ MOONSHOT_API_KEY=sk-your-key-here
 RAG_LLM_PROVIDER=moonshot
 RAG_LLM_MODEL=moonshot-v1-32k
 
-# SAM (Segment Anything Model) Settings - Optional
-ENABLE_SAM=true                    # Set to false to disable component extraction
-SAM_MODEL=sam2_b                   # sam2_b (recommended), sam2_l, sam2_s, sam2_t
-SAM_CONFIDENCE_THRESHOLD=0.5       # Detection confidence (0.0 to 1.0)
-COMPONENTS_DIR=components          # Output directory for component images
+# SAM3 - Part Segmentation (NEW!)
+ENABLE_SAM3=true                   # Enable SAM3 segmentation
+SAM3_DEVICE=cuda                   # cuda or cpu
+SAM3_CONFIDENCE_THRESHOLD=0.7      # Minimum confidence (0.0-1.0)
+SAM3_OUTPUT_DIR=./output/segmented_parts
+SAM3_SAVE_MASKS=true               # Save segmentation masks
+SAM3_SAVE_CROPPED_IMAGES=true      # Save cropped part images
 ```
 
 ### Step 2: Install Dependencies
@@ -87,8 +92,14 @@ COMPONENTS_DIR=components          # Output directory for component images
 # Install all dependencies with uv
 uv sync
 
-# This installs Phase 1 + Backend dependencies
+# Authenticate with HuggingFace for SAM3
+huggingface-cli login
+# Enter your HuggingFace token when prompted
+
+# This installs Phase 1 + Backend dependencies + SAM3
 ```
+
+**Note**: SAM3 model checkpoint (~2GB) will auto-download on first use.
 
 ### Step 3: Process Manual (Complete Workflow)
 
@@ -109,12 +120,16 @@ uv run python main.py https://www.lego.com/cdn/product-assets/product.bi.core.pd
 #   - 6454922_extracted.json      (Step data with subassembly_hints & context_references)
 #   - 6454922_plan.json           (3D assembly plan)
 #   - 6454922_dependencies.json   (Step dependencies)
-#   - 6454922_graph.json          (Hierarchical assembly graph - enhanced)
+#   - 6454922_graph.json          (Hierarchical assembly graph with image references)
 #   - 6454922_plan.txt            (Human-readable plan)
 #   - temp_pages/*.png            (Step diagram images)
-#   - components/                 (Extracted component images - if SAM enabled)
-#       - part_*.png              (Individual part images)
-#       - subasm_*.png            (Subassembly images)
+#   - segmented_parts/            (SAM3 segmented images - NEW!)
+#       └── 6454922/
+#           └── step_001/
+#               ├── part_0_image.png   (Cropped part images)
+#               ├── part_0_mask.png    (Segmentation masks)
+#               ├── assembly_image.png (Assembled result)
+#               └── assembly_mask.png  (Assembly mask)
 #   - .6454922_checkpoint.json    (Progress checkpoint - hidden)
 ```
 

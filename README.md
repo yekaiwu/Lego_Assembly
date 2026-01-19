@@ -14,10 +14,10 @@ This system provides end-to-end LEGO assembly assistance through an integrated w
 - **📄 Phase 0 - Document Understanding**: Smart page filtering to remove covers, ads, and inventory
 - **🧠 Phase 1 - Context-Aware Extraction**: VLM extraction with sliding window + long-term memory
 - VLM-based step extraction from PDF instruction manuals
+- **✂️ SAM3 Part Segmentation**: Precise pixel-level segmentation of LEGO parts and assemblies with bounding boxes
 - 3D plan generation with spatial reasoning
 - Dependency graph construction
-- **🧠 Hierarchical Assembly Graph**: Parts → Subassemblies → Model structure (enhanced with context hints)
-- **🖼️ SAM Component Extraction**: Automatic extraction and storage of individual part and subassembly images
+- **🧠 Hierarchical Assembly Graph**: Parts → Subassemblies → Model structure (with visual references from SAM3)
 - Part database integration with Rebrickable
 
 ### **Phase 2: Multimodal RAG Ingestion** ⭐ Automatic
@@ -88,10 +88,10 @@ Lego_Assembly/
 ├── src/                         # Phase 1: Manual Processing
 │   ├── api/                    # VLM clients (Qwen, DeepSeek, Kimi)
 │   ├── vision_processing/      # PDF extraction & VLM analysis
-│   │   └── sam_segmenter.py   # 🖼️ NEW: SAM-based component segmentation
+│   │   ├── sam3_segmenter.py  # ✂️ NEW: SAM3 part segmentation
+│   │   └── vlm_step_extractor.py  # VLM extraction with SAM3 integration
 │   ├── plan_generation/        # 3D planning, part database & graph builder
-│   │   ├── graph_builder.py   # 🧠 NEW: Hierarchical graph construction
-│   │   └── component_extractor.py  # 🖼️ NEW: Component image extraction service
+│   │   └── graph_builder.py   # 🧠 Hierarchical graph construction
 │   └── utils/                  # Configuration & caching
 │
 ├── backend/                     # Phase 2: Vision-Enhanced RAG
@@ -127,11 +127,15 @@ Lego_Assembly/
 │   ├── {manual_id}_extracted.json     # Step extraction data
 │   ├── {manual_id}_plan.json          # 3D assembly plan
 │   ├── {manual_id}_dependencies.json  # Dependency graph
-│   ├── {manual_id}_graph.json         # 🧠 NEW: Hierarchical assembly graph
+│   ├── {manual_id}_graph.json         # 🧠 Hierarchical assembly graph (with image refs)
 │   ├── temp_pages/*.png               # Step images
-│   └── components/                     # 🖼️ NEW: Extracted component images
-│       ├── part_*.png                 # Individual part images
-│       └── subasm_*.png               # Subassembly images
+│   └── segmented_parts/               # ✂️ NEW: SAM3 segmented images
+│       └── {manual_id}/
+│           └── step_{n}/
+│               ├── part_*_image.png   # Cropped part images
+│               ├── part_*_mask.png    # Segmentation masks
+│               ├── assembly_image.png # Cropped assembly result
+│               └── assembly_mask.png  # Assembly segmentation
 │
 └── data/
     └── parts_database.db       # LEGO parts cache
@@ -145,9 +149,11 @@ See [QUICK_START.md](QUICK_START.md) for detailed setup instructions.
 
 ### Prerequisites
 
-- Python 3.9+ with `uv` package manager
+- Python 3.12+ with `uv` package manager
 - Node.js 18+ and npm
 - Poppler (for PDF processing)
+- CUDA-capable GPU (recommended for SAM3) or CPU
+- HuggingFace account (for SAM3 model access)
 - At least one API key: Qwen (DashScope), DeepSeek, or Moonshot
 
 ### 1. Configure Environment
@@ -172,6 +178,79 @@ uv sync
 # Or with pip
 pip install -e .
 ```
+
+### 2b. SAM3 Segmentation Setup (Optional)
+
+SAM3 provides automatic part and assembly segmentation using Roboflow's cloud API.
+
+**Benefits**:
+- Pixel-level segmentation of individual LEGO parts
+- Automatic generation of cropped images and masks
+- Enhanced visual retrieval in RAG pipeline
+- Bounding box extraction for spatial reasoning
+
+**Setup Steps**:
+
+1. **Get Roboflow API Key** (Free):
+   - Visit https://app.roboflow.com
+   - Create a free account
+   - Go to Settings → API
+   - Copy your API key
+
+2. **Configure Environment Variables**:
+   ```bash
+   # In your .env file, enable SAM3 and add your API key
+   ENABLE_ROBOFLOW_SAM3=true
+   ROBOFLOW_API_KEY=your_api_key_here
+
+   # Optional: Adjust settings (defaults shown)
+   ROBOFLOW_SAM3_CONFIDENCE_THRESHOLD=0.7
+   ROBOFLOW_SAM3_OUTPUT_DIR=./output/segmented_parts
+   ROBOFLOW_SAM3_SAVE_MASKS=true
+   ROBOFLOW_SAM3_SAVE_CROPPED_IMAGES=true
+   ```
+
+3. **Run Integration Tests**:
+   ```bash
+   # Test your SAM3 configuration
+   uv run python test_roboflow_sam3_integration.py
+   ```
+
+**How It Works**:
+- Runs automatically after VLM extraction (Step 3.5)
+- Uses VLM-extracted part descriptions as text prompts
+- Segments both individual parts and assembled results
+- Saves outputs to `{OUTPUT_DIR}/{assembly_id}/step_XXX/`
+- Integrates seamlessly with part association and graph building
+
+**Output Files**:
+```
+output/segmented_parts/
+└── 6454922/
+    ├── step_001/
+    │   ├── part_0.png              # Cropped part image
+    │   ├── part_0_mask.png         # Binary mask
+    │   ├── part_1.png
+    │   ├── part_1_mask.png
+    │   ├── assembly.png            # Assembled result crop
+    │   └── assembly_mask.png       # Assembly mask
+    ├── step_002/
+    │   └── ...
+    └── step_003/
+        └── ...
+```
+
+**Disable SAM3**:
+```bash
+# Set in .env to skip segmentation
+ENABLE_ROBOFLOW_SAM3=false
+```
+
+**Performance Notes**:
+- ~2-5 seconds per step with API
+- Free tier has usage limits (check Roboflow dashboard)
+- Graceful degradation: Pipeline continues if segmentation fails
+- Consider costs for large manuals (20+ steps)
 
 ### 3. Process a Manual (Complete Workflow - Phase 1 + 2)
 
@@ -564,6 +643,14 @@ This generates fused embeddings (text + diagram descriptions) for improved visua
 - **VLM Extraction**: Uses Qwen-VL, DeepSeek, or Kimi to analyze manual pages
 - **Step Detection**: Automatically identifies step boundaries
 - **Part Recognition**: Extracts part descriptions, colors, and quantities
+- **SAM3 Part Segmentation** (NEW - Optional):
+  - Automatic pixel-level segmentation of LEGO parts and assemblies
+  - Text-prompt based using Roboflow's SAM3 Cloud API
+  - Generates cropped images and masks for each part
+  - Enhances retrieval with visual references
+  - **Setup**: Get free API key from https://app.roboflow.com
+  - **Configuration**: Set `ENABLE_ROBOFLOW_SAM3=true` and `ROBOFLOW_API_KEY` in `.env`
+  - **See full setup instructions below**
 - **Spatial Analysis**: Determines 3D positions and relationships
 - **Dependency Graph**: Builds assembly order with parallel paths
 - **Part Matching**: Integrates with Rebrickable for part IDs
@@ -677,11 +764,13 @@ MAX_CONTEXT_LENGTH=4000
 PARTS_DB_PATH=./data/parts_database.db
 REBRICKABLE_API_KEY=...           # Optional, for part enrichment
 
-# SAM (Segment Anything Model) Settings
-ENABLE_SAM=true                    # Enable/disable component image extraction
-SAM_MODEL=sam2_b                   # sam2_b (base), sam2_l (large), sam2_s (small), sam2_t (tiny)
-SAM_CONFIDENCE_THRESHOLD=0.5       # Detection confidence threshold (0.0 to 1.0)
-COMPONENTS_DIR=components          # Component images directory (relative to OUTPUT_DIR)
+# SAM3 - Part Segmentation (NEW!)
+ENABLE_SAM3=true                   # Enable SAM3 segmentation
+SAM3_DEVICE=cuda                   # cuda or cpu
+SAM3_CONFIDENCE_THRESHOLD=0.7      # Minimum confidence (0.0-1.0)
+SAM3_OUTPUT_DIR=./output/segmented_parts
+SAM3_SAVE_MASKS=true               # Save segmentation masks
+SAM3_SAVE_CROPPED_IMAGES=true      # Save cropped part images
 ```
 
 ### LLM Provider Selection
@@ -702,40 +791,6 @@ COMPONENTS_DIR=components          # Component images directory (relative to OUT
 - 32K context window
 - Cost: ~¥0.12/1K tokens (~$0.017)
 - Note: Uses Qwen for embeddings
-
-### SAM (Segment Anything Model) Configuration
-
-**Purpose**: Automatically extracts individual part and subassembly images from instruction pages using computer vision.
-
-**Features**:
-- Segments individual components from instruction diagrams
-- Stores cropped images in the `components/` directory
-- Adds `image_path` field to graph nodes (parts and subassemblies)
-- Enables visual graph visualization and better user experience
-
-**Model Selection**:
-- `sam2_t` (tiny): Fastest, lowest memory, good for resource-constrained environments
-- `sam2_s` (small): Balanced performance
-- `sam2_b` (base): **Recommended** - Best balance of speed and accuracy
-- `sam2_l` (large): Highest accuracy, slower processing, more memory
-
-**Configuration**:
-```bash
-ENABLE_SAM=true                    # Set to false to disable component extraction
-SAM_MODEL=sam2_b                   # Choose model size
-SAM_CONFIDENCE_THRESHOLD=0.5       # Lower = more detections, higher = more accurate
-COMPONENTS_DIR=components          # Output directory for component images
-```
-
-**Requirements**:
-- PyTorch 2.0+ (automatically installed)
-- ~2-4 GB RAM for sam2_b model
-- GPU support optional (uses CPU by default, MPS on Apple Silicon)
-
-**Disabling SAM**: If you want to skip component image extraction (faster processing, less storage):
-```bash
-ENABLE_SAM=false
-```
 
 ---
 
