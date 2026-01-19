@@ -108,8 +108,7 @@ class PartAssociationModule:
         self,
         extracted_steps: List[Dict[str, Any]],
         manual_pages: List[str],
-        assembly_id: str,
-        component_extractor=None
+        assembly_id: str
     ) -> Dict[str, Any]:
         """
         Build complete part catalog from manual pages.
@@ -118,7 +117,6 @@ class PartAssociationModule:
             extracted_steps: Previously extracted step data
             manual_pages: List of paths to manual page images
             assembly_id: Assembly identifier for caching
-            component_extractor: Optional ComponentExtractor for extracting part images
 
         Returns:
             Dictionary with parts_catalog and confidence
@@ -143,16 +141,6 @@ class PartAssociationModule:
             relevant_pages[:10],  # Analyze first 10 relevant pages
             assembly_id
         )
-
-        # Phase 2.5: Extract component images (if SAM is enabled)
-        if component_extractor and component_extractor.is_enabled():
-            logger.info("Extracting part images with SAM")
-            enriched_parts = self._extract_part_images(
-                enriched_parts,
-                extracted_steps,
-                manual_pages,
-                component_extractor
-            )
 
         # Phase 3: Build catalog
         for i, part_data in enumerate(enriched_parts):
@@ -295,135 +283,6 @@ class PartAssociationModule:
             logger.warning(f"VLM role assignment failed: {e}. Using heuristics.")
             # Fallback: use heuristic role assignment
             return [self._assign_role_heuristic(p) for p in parts]
-
-    def _extract_part_images(
-        self,
-        parts: List[Dict[str, Any]],
-        extracted_steps: List[Dict[str, Any]],
-        manual_pages: List[str],
-        component_extractor
-    ) -> List[Dict[str, Any]]:
-        """
-        Extract component images for parts using SAM.
-
-        Args:
-            parts: List of part data dictionaries
-            extracted_steps: Previously extracted step data
-            manual_pages: List of paths to manual page images
-            component_extractor: ComponentExtractor instance
-
-        Returns:
-            Parts list with image_path field added
-        """
-        logger.info(f"Extracting images for {len(parts)} parts")
-
-        parts_with_images = []
-        for part in parts:
-            part_copy = part.copy()
-
-            # Find the first step where this part appears
-            first_appears_step = part.get("first_appears_step", 1)
-
-            # Find the actual page for this step from extracted_steps
-            page_path = None
-            for step in extracted_steps:
-                if step.get("step_number") == first_appears_step:
-                    source_pages = step.get("_source_page_paths", [])
-                    if source_pages:
-                        page_path = source_pages[0]
-                    break
-
-            if page_path:
-                # Generate a unique part ID for this part
-                part_id = f"{part['color']}_{part['shape']}".replace(" ", "_")
-
-                # Get VLM center point hint from extracted_steps
-                center_point = None
-                for step in extracted_steps:
-                    if step.get("step_number") == first_appears_step:
-                        parts_required = step.get("parts_required", [])
-                        # Try to match this part to a part in parts_required by color and shape
-                        for part_req in parts_required:
-                            if (part_req.get("color", "").lower() in part["color"].lower() or
-                                part["color"].lower() in part_req.get("color", "").lower()):
-                                if "center_point" in part_req:
-                                    center_point = part_req["center_point"]
-                                    logger.debug(f"Found center_point {center_point} for {part['name']}")
-                                    break
-                        if center_point:
-                            break
-
-                # Prepare part data with center point hint
-                part_data_with_hint = part.copy()
-                if center_point:
-                    part_data_with_hint["center_point"] = center_point
-
-                # Extract the part image using CV detection with center point hint
-                image_path = component_extractor.extract_part_image(
-                    part_id=part_id,
-                    page_path=page_path,
-                    part_data=part_data_with_hint
-                )
-
-                if image_path:
-                    part_copy["image_path"] = image_path
-                    logger.debug(f"✓ Extracted image for {part['name']}: {image_path}")
-                else:
-                    logger.debug(f"✗ Failed to extract image for {part['name']}")
-            else:
-                logger.warning(f"Could not find page for step {first_appears_step} for part {part['name']}")
-
-            parts_with_images.append(part_copy)
-
-        extracted_count = sum(1 for p in parts_with_images if p.get("image_path"))
-        logger.info(f"Successfully extracted {extracted_count}/{len(parts)} part images")
-
-        return parts_with_images
-
-    def _find_part_bbox(
-        self,
-        part: Dict[str, Any],
-        step_number: int,
-        extracted_steps: List[Dict[str, Any]]
-    ) -> Optional[Tuple[int, int, int, int]]:
-        """
-        Find bounding box hint for a part from VLM extraction data.
-
-        Args:
-            part: Part dictionary from catalog
-            step_number: Step number where part first appears
-            extracted_steps: Raw VLM extraction data
-
-        Returns:
-            Bounding box (x1, y1, x2, y2) or None if not found
-        """
-        # Find the step in extracted data
-        matching_step = None
-        for step in extracted_steps:
-            if step.get("step_number") == step_number:
-                matching_step = step
-                break
-
-        if not matching_step:
-            return None
-
-        # Look for matching part in parts_required
-        parts_required = matching_step.get("parts_required", [])
-        for vlm_part in parts_required:
-            # Match by color and shape
-            if (vlm_part.get("color", "").lower() == part.get("color", "").lower() and
-                vlm_part.get("shape", "").lower() in part.get("shape", "").lower()):
-
-                # Check if bbox exists and is valid
-                bbox = vlm_part.get("bbox")
-                if bbox and isinstance(bbox, list) and len(bbox) == 4:
-                    # Validate bbox values
-                    x1, y1, x2, y2 = bbox
-                    if all(isinstance(v, (int, float)) for v in bbox) and x2 > x1 and y2 > y1:
-                        logger.debug(f"Found VLM bbox for {part['name']}: {bbox}")
-                        return tuple(int(v) for v in bbox)
-
-        return None
 
     def _call_vlm_with_custom_prompt(
         self,
