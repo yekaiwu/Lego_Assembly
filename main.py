@@ -339,7 +339,9 @@ def main(
                     output_dir=config.roboflow.sam3_output_dir,
                     save_masks=config.roboflow.sam3_save_masks,
                     save_cropped_images=config.roboflow.sam3_save_cropped_images,
-                    output_format=config.roboflow.sam3_output_format
+                    output_format=config.roboflow.sam3_output_format,
+                    retry_vlm=config.roboflow.sam3_retry_vlm,
+                    retry_enabled=config.roboflow.sam3_retry_enabled
                 )
 
                 logger.info(f"Processing {len(extracted_steps)} steps with SAM3...")
@@ -366,9 +368,15 @@ def main(
                         # Update step with segmentation data
                         extracted_steps[i] = segmented_step
 
-                        parts_count = len(segmented_step.get("segmented_parts", []))
-                        assembly_ok = "✓" if segmented_step.get("assembled_result") else "✗"
-                        logger.info(f"    ✓ Parts: {parts_count}, Assembly: {assembly_ok}")
+                        # Count parts with successful segmentation (have bounding_box)
+                        parts_list = segmented_step.get("parts_required", [])
+                        parts_segmented = sum(1 for p in parts_list if p.get("bounding_box"))
+
+                        # Check if assembly was segmented (has bounding_box)
+                        assembled_product = segmented_step.get("assembled_product", {})
+                        assembly_ok = "✓" if isinstance(assembled_product, dict) and assembled_product.get("bounding_box") else "✗"
+
+                        logger.info(f"    ✓ Parts: {parts_segmented}/{len(parts_list)}, Assembly: {assembly_ok}")
 
                     except Exception as e:
                         logger.warning(f"    ✗ SAM3 segmentation failed for step {step_number}: {e}")

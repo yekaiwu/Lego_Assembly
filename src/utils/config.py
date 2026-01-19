@@ -98,6 +98,13 @@ class RoboflowConfig(BaseModel):
     sam3_output_format: str = Field(
         default_factory=lambda: os.getenv("ROBOFLOW_SAM3_OUTPUT_FORMAT", "json")
     )
+    # Retry settings for failed segmentations
+    sam3_retry_enabled: bool = Field(
+        default_factory=lambda: os.getenv("SAM3_RETRY_ENABLED", "true").lower() == "true"
+    )
+    sam3_retry_vlm: str = Field(
+        default_factory=lambda: os.getenv("SAM3_RETRY_VLM", "gemini/gemini-robotics-er-1.5-preview")
+    )
 
 class SystemConfig(BaseModel):
     """Overall system configuration."""

@@ -90,7 +90,9 @@ class RoboflowSAM3Segmenter:
         save_cropped_images: bool = True,
         output_format: str = "json",
         max_retries: int = 3,
-        timeout: int = 30
+        timeout: int = 30,
+        retry_vlm: Optional[str] = None,
+        retry_enabled: bool = True
     ):
         """
         Initialize Roboflow SAM3 segmenter.
@@ -104,6 +106,8 @@ class RoboflowSAM3Segmenter:
             output_format: API output format ("json", "polygon", or "rle")
             max_retries: Maximum number of API retry attempts
             timeout: API request timeout in seconds
+            retry_vlm: VLM model for box selection (e.g., "gemini/gemini-robotics-er-1.5-preview")
+            retry_enabled: Enable retry logic for failed segmentations
         """
         if not api_key or api_key == "your_roboflow_api_key_here":
             raise ValueError(
@@ -118,6 +122,7 @@ class RoboflowSAM3Segmenter:
         self.output_format = output_format
         self.max_retries = max_retries
         self.timeout = timeout
+        self.retry_enabled = retry_enabled
 
         # Create output directory
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -125,9 +130,13 @@ class RoboflowSAM3Segmenter:
         # Image embedding cache for efficiency
         self._embedding_cache: Dict[str, str] = {}
 
+        # VLM client for retry logic (lazy loaded)
+        self._retry_vlm = retry_vlm
+        self._vlm_client = None
+
         logger.info(
             f"RoboflowSAM3Segmenter initialized "
-            f"(threshold={confidence_threshold}, format={output_format})"
+            f"(threshold={confidence_threshold}, format={output_format}, retry={retry_enabled})"
         )
 
     def _encode_image_to_base64(self, image_path: str) -> str:
@@ -354,6 +363,89 @@ class RoboflowSAM3Segmenter:
 
         return cropped_img
 
+    def _get_vlm_client(self):
+        """Lazy load VLM client for box selection."""
+        if self._vlm_client is None and self._retry_vlm:
+            from ..api.litellm_vlm import UnifiedVLMClient
+            logger.debug(f"Initializing VLM client for retry: {self._retry_vlm}")
+            self._vlm_client = UnifiedVLMClient(self._retry_vlm)
+        return self._vlm_client
+
+    def _select_box_with_vlm(
+        self,
+        image: np.ndarray,
+        boxes: List[List[int]],
+        target_description: str
+    ) -> Optional[Tuple[List[int], int]]:
+        """
+        Use VLM to select the correct bounding box from multiple candidates.
+
+        Args:
+            image: Source image (RGB numpy array)
+            boxes: List of bounding boxes [[x1, y1, x2, y2], ...]
+            target_description: Description of what to find (e.g., "black sloped LEGO piece")
+
+        Returns:
+            Tuple of (selected_box, box_index) or None if no match
+        """
+        if not boxes:
+            return None
+
+        vlm_client = self._get_vlm_client()
+        if not vlm_client:
+            logger.warning("VLM client not available for box selection")
+            return None
+
+        logger.info(f"   🤖 Using VLM to select from {len(boxes)} candidates...")
+        logger.debug(f"      Target: '{target_description}'")
+
+        # Convert numpy array to PIL Image
+        pil_image = Image.fromarray(image)
+
+        for i, box in enumerate(boxes):
+            try:
+                # Crop the bounding box
+                x1, y1, x2, y2 = box
+                cropped = pil_image.crop((x1, y1, x2, y2))
+
+                # Save to temporary bytes buffer
+                buffer = io.BytesIO()
+                cropped.save(buffer, format="PNG")
+                buffer.seek(0)
+
+                # Create temporary file path for VLM
+                import tempfile
+                with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                    cropped.save(tmp, format="PNG")
+                    tmp_path = tmp.name
+
+                # Ask VLM
+                prompt = f"Does this image show a {target_description}? Answer ONLY 'yes' or 'no'."
+
+                logger.debug(f"      [{i}] Checking box at {box[:2]}...")
+
+                # Query VLM
+                response = vlm_client.generate_text_description(tmp_path, prompt)
+
+                # Clean up temp file
+                import os
+                os.unlink(tmp_path)
+
+                # Check response
+                response_lower = response.lower().strip()
+                if "yes" in response_lower and "no" not in response_lower:
+                    logger.info(f"      ✅ [{i}] VLM confirmed match: '{response_lower}'")
+                    return box, i
+                else:
+                    logger.debug(f"      ❌ [{i}] VLM rejected: '{response_lower}'")
+
+            except Exception as e:
+                logger.warning(f"      ⚠️  [{i}] VLM query failed: {e}")
+                continue
+
+        logger.warning("   ❌ VLM found no matching box")
+        return None
+
     def _build_part_prompt(self, part_dict: Dict[str, Any]) -> str:
         """
         Build text prompt from part description, color, and shape.
@@ -553,11 +645,11 @@ class RoboflowSAM3Segmenter:
         assembly_id: str
     ) -> List[PartSegmentation]:
         """
-        Segment individual LEGO parts from instruction step image using text prompts.
+        Segment individual LEGO parts using VLM-provided SAM3 prompts.
 
         Args:
             image_path: Path to instruction step image
-            parts_list: List of part dicts from VLM extraction (parts_required)
+            parts_list: List of part dicts from VLM extraction (with sam3_prompt field)
             step_number: Step number for output organization
             assembly_id: Assembly ID for output directory
 
@@ -571,9 +663,17 @@ class RoboflowSAM3Segmenter:
         logger.info(f"🔍 Segmenting {len(parts_list)} parts for step {step_number}")
         logger.info(f"   Image: {Path(image_path).name}")
 
-        # Build text prompts for all parts
-        text_prompts = [self._build_part_prompt(part) for part in parts_list]
-        logger.info(f"   SAM3 prompts prepared:")
+        # Extract sam3_prompt from VLM (fallback to building if not present)
+        text_prompts = []
+        for part in parts_list:
+            if "sam3_prompt" in part and part["sam3_prompt"]:
+                text_prompts.append(part["sam3_prompt"])
+            else:
+                # Fallback if VLM didn't provide sam3_prompt
+                logger.debug(f"   Part missing sam3_prompt, using fallback")
+                text_prompts.append(self._build_part_prompt(part))
+
+        logger.info(f"   SAM3 prompts from VLM:")
         for i, prompt in enumerate(text_prompts):
             logger.info(f"     [{i}] \"{prompt}\"")
 
@@ -759,6 +859,117 @@ class RoboflowSAM3Segmenter:
 
         return assembly_seg
 
+    def _retry_with_generic_prompt(
+        self,
+        image_path: str,
+        target_description: str,
+        part_dict: Dict[str, Any],
+        part_index: int,
+        step_number: int,
+        assembly_id: str,
+        is_assembly: bool = False
+    ) -> Optional[PartSegmentation]:
+        """
+        Retry segmentation using generic "lego subassembly" prompt + VLM selection.
+
+        Args:
+            image_path: Path to instruction step image
+            target_description: What we're looking for (e.g., "black sloped LEGO piece")
+            part_dict: Original part dictionary from VLM
+            part_index: Index of part in parts_required array
+            step_number: Step number
+            assembly_id: Assembly ID
+            is_assembly: Whether this is for assembled_product (vs part)
+
+        Returns:
+            PartSegmentation if successful, None otherwise
+        """
+        logger.info(f"   🔄 Retrying with generic 'lego subassembly' prompt...")
+
+        # Use generic prompt
+        generic_prompt = "lego subassembly"
+        api_response = self._call_roboflow_api(image_path, [generic_prompt])
+
+        if not api_response:
+            logger.warning("   ❌ Generic prompt API call failed")
+            return None
+
+        # Load image
+        image = cv2.imread(image_path)
+        if image is None:
+            logger.error(f"Failed to load image: {image_path}")
+            return None
+
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        image_shape = image.shape[:2]
+
+        # Parse API results
+        prompt_results = api_response.get("prompt_results", [])
+        if not prompt_results:
+            logger.warning("   ❌ No results from generic prompt")
+            return None
+
+        result = prompt_results[0]
+        predictions = result.get("predictions", [])
+
+        if not predictions:
+            logger.warning("   ❌ No predictions from generic prompt")
+            return None
+
+        logger.info(f"   ✓ Generic prompt returned {len(predictions)} candidates")
+
+        # Extract all bounding boxes from predictions
+        boxes = []
+        masks_list = []
+        confidences = []
+
+        for pred in predictions:
+            if "masks" not in pred or not pred["masks"]:
+                continue
+
+            polygon_points = pred["masks"][0]
+            mask = self._polygon_to_mask(polygon_points, image_shape)
+            bbox = self._mask_to_bbox(mask)
+
+            if bbox:
+                boxes.append(bbox)
+                masks_list.append(mask)
+                confidences.append(pred.get("confidence", 0.5))
+
+        if not boxes:
+            logger.warning("   ❌ No valid bounding boxes extracted")
+            return None
+
+        # Use VLM to select correct box
+        result = self._select_box_with_vlm(image, boxes, target_description)
+
+        if not result:
+            logger.warning("   ❌ VLM could not select correct box")
+            return None
+
+        selected_box, box_idx = result
+        selected_mask = masks_list[box_idx]
+        selected_confidence = confidences[box_idx]
+
+        logger.info(f"   ✅ Retry successful! Selected box {box_idx}/{len(boxes)}")
+
+        # Create PartSegmentation (even for assembly, we use this structure temporarily)
+        part_seg = PartSegmentation(
+            part_index=part_index,
+            description=part_dict.get("description", ""),
+            color=part_dict.get("color", ""),
+            shape=part_dict.get("shape", ""),
+            mask=selected_mask,
+            bounding_box=selected_box,
+            confidence=selected_confidence
+        )
+
+        # Save outputs
+        output_dir = self.output_dir / assembly_id / f"step_{step_number:03d}"
+        part_seg = self._save_part_outputs(image, part_seg, output_dir)
+
+        return part_seg
+
     def process_step(
         self,
         image_path: str,
@@ -795,23 +1006,139 @@ class RoboflowSAM3Segmenter:
             logger.debug("   Waiting 2s before assembly segmentation (avoid API race condition)...")
             time.sleep(2)
 
+        # Extract sam3_prompt from VLM's assembled_product (fallback to building)
+        assembled_product = extracted_step.get("assembled_product", {})
+        if isinstance(assembled_product, dict) and "sam3_prompt" in assembled_product:
+            assembly_prompt = assembled_product["sam3_prompt"]
+        else:
+            # Fallback: build prompt from existing_assembly or generic
+            logger.debug("   Assembly missing sam3_prompt, using fallback")
+            assembly_prompt = self._build_assembly_prompt(extracted_step)
+
         # Segment assembled result
-        assembly_prompt = self._build_assembly_prompt(extracted_step)
         assembly_segmentation = self.segment_assembled_result(
             image_path, step_number, assembly_id, text_hint=assembly_prompt
         )
 
-        # Add segmentation data to step dict (convert to JSON-serializable format)
-        extracted_step["segmented_parts"] = [seg.to_dict() for seg in part_segmentations]
+        # Update parts_required with segmentation data (add to existing part dicts)
+        for i, part_seg in enumerate(part_segmentations):
+            if part_seg.part_index < len(parts_list):
+                parts_list[part_seg.part_index].update({
+                    "bounding_box": part_seg.bounding_box,
+                    "cropped_image_path": part_seg.cropped_image_path,
+                    "mask_path": part_seg.mask_path,
+                    "confidence": part_seg.confidence
+                })
 
+        # RETRY LOGIC: Handle failed part segmentations
+        if self.retry_enabled and self._retry_vlm:
+            failed_parts = [
+                (idx, part) for idx, part in enumerate(parts_list)
+                if not part.get("bounding_box")
+            ]
+
+            if failed_parts:
+                logger.info(f"📝 Retry queue: {len(failed_parts)} failed part(s)")
+
+                for idx, part in failed_parts:
+                    # Build description for VLM
+                    sam3_prompt = part.get("sam3_prompt", "")
+                    if not sam3_prompt:
+                        # Fallback to building description
+                        color = part.get("color", "")
+                        shape = part.get("shape", "")
+                        desc = part.get("description", "")
+                        sam3_prompt = f"{color} {shape}".strip() or desc
+
+                    logger.info(f"   Retrying part [{idx}]: {sam3_prompt}")
+
+                    # Small delay before retry to avoid API issues
+                    time.sleep(1)
+
+                    retry_result = self._retry_with_generic_prompt(
+                        image_path=image_path,
+                        target_description=sam3_prompt,
+                        part_dict=part,
+                        part_index=idx,
+                        step_number=step_number,
+                        assembly_id=assembly_id,
+                        is_assembly=False
+                    )
+
+                    if retry_result:
+                        # Update part with retry results
+                        parts_list[idx].update({
+                            "bounding_box": retry_result.bounding_box,
+                            "cropped_image_path": retry_result.cropped_image_path,
+                            "mask_path": retry_result.mask_path,
+                            "confidence": retry_result.confidence
+                        })
+                        logger.info(f"   ✅ Retry successful for part [{idx}]")
+                    else:
+                        logger.warning(f"   ❌ Retry failed for part [{idx}]")
+
+        # Update assembled_product with segmentation data
         if assembly_segmentation:
-            extracted_step["assembled_result"] = assembly_segmentation.to_dict()
+            if not isinstance(extracted_step.get("assembled_product"), dict):
+                extracted_step["assembled_product"] = {}
+            extracted_step["assembled_product"].update({
+                "bounding_box": assembly_segmentation.bounding_box,
+                "cropped_image_path": assembly_segmentation.cropped_image_path,
+                "mask_path": assembly_segmentation.mask_path,
+                "confidence": assembly_segmentation.confidence
+            })
         else:
-            extracted_step["assembled_result"] = None
+            # Keep sam3_prompt even if segmentation failed
+            if not isinstance(extracted_step.get("assembled_product"), dict):
+                extracted_step["assembled_product"] = {}
+
+            # RETRY LOGIC: Handle failed assembly segmentation
+            if self.retry_enabled and self._retry_vlm:
+                assembled_product = extracted_step.get("assembled_product", {})
+                if isinstance(assembled_product, dict) and not assembled_product.get("bounding_box"):
+                    # Get assembly description
+                    assembly_desc = assembled_product.get("sam3_prompt", "") or assembly_prompt
+
+                    logger.info(f"📝 Retrying assembly: {assembly_desc}")
+
+                    # Small delay before retry
+                    time.sleep(1)
+
+                    # Create fake part_dict for assembly retry
+                    assembly_part_dict = {
+                        "description": assembly_desc,
+                        "color": "",
+                        "shape": ""
+                    }
+
+                    retry_result = self._retry_with_generic_prompt(
+                        image_path=image_path,
+                        target_description=assembly_desc,
+                        part_dict=assembly_part_dict,
+                        part_index=0,  # Dummy index
+                        step_number=step_number,
+                        assembly_id=assembly_id,
+                        is_assembly=True
+                    )
+
+                    if retry_result:
+                        extracted_step["assembled_product"].update({
+                            "bounding_box": retry_result.bounding_box,
+                            "cropped_image_path": retry_result.cropped_image_path,
+                            "mask_path": retry_result.mask_path,
+                            "confidence": retry_result.confidence
+                        })
+                        logger.info(f"   ✅ Assembly retry successful")
+                    else:
+                        logger.warning(f"   ❌ Assembly retry failed")
+
+        # Final summary logging
+        parts_with_bbox = sum(1 for p in parts_list if p.get("bounding_box"))
+        assembly_ok = isinstance(extracted_step.get("assembled_product"), dict) and extracted_step["assembled_product"].get("bounding_box")
 
         logger.info(
-            f"✓ Step {step_number}: Parts={len(part_segmentations)}, "
-            f"Assembly={'✓' if assembly_segmentation else '✗'}"
+            f"✓ Step {step_number}: Parts={parts_with_bbox}/{len(parts_list)}, "
+            f"Assembly={'✓' if assembly_ok else '✗'}"
         )
 
         return extracted_step
