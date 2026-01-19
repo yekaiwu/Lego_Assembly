@@ -13,7 +13,7 @@ dependencies = [
     # Phase 1: Manual Processing
     "pdf2image>=1.16.0",
     "PyMuPDF>=1.23.0",
-    "Pillow>=10.0.0",
+    "pillow>=10.0.0",
     "numpy>=1.24.0",
     "opencv-python>=4.8.0",
     "requests>=2.31.0",
@@ -32,11 +32,12 @@ dependencies = [
     "aiofiles>=23.2.1",
     # LLM Unified Interface
     "litellm>=1.30.0",
-    "openai>=1.6.0",  # Required by LiteLLM for OpenAI models
+    "openai>=1.6.0", # Required by LiteLLM for OpenAI models
     # Computer Vision - SAM Integration
     "torch>=2.0.0",
     "torchvision>=0.15.0",
-    "ultralytics>=8.0.0",  # Includes SAM 2.0 implementation
+    "ultralytics>=8.0.0", # Includes SAM 2.0 implementation
+    "matplotlib>=3.9.4",
 ]
 
 [project.optional-dependencies]

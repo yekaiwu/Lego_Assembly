@@ -145,6 +145,9 @@ class SubassemblyDetector:
                 parent_subassembly = previous_subassembly
                 logger.debug(f"Step {step_number}: Default sequential link to {previous_subassembly}")
 
+        # Extract SAM3 assembled result data if available
+        assembled_result = step.get("assembled_result", {})
+
         # Create subassembly definition
         subassembly = {
             "name": subasm_name,
@@ -159,7 +162,11 @@ class SubassemblyDetector:
                 "required_parts": len(component_parts),
                 "required_connections": self._extract_connections(actions),
                 "spatial_signature": self._extract_spatial_signature(step)
-            }
+            },
+            # SAM3 segmentation data from assembled result (if available)
+            "cropped_image_path": assembled_result.get("cropped_image_path") if assembled_result else None,
+            "mask_path": assembled_result.get("mask_path") if assembled_result else None,
+            "bounding_box": assembled_result.get("bounding_box") if assembled_result else None
         }
 
         return subassembly
@@ -514,7 +521,11 @@ class GraphBuilder:
                 "children": [],
                 "parents": [],
                 "step_created": part_data.get("first_appears_step", 1),
-                "layer": None  # Will be set later
+                "layer": None,  # Will be set later
+                # SAM3 segmentation data
+                "image_path": part_data.get("cropped_image_path"),
+                "mask_path": part_data.get("mask_path"),
+                "bounding_box": part_data.get("bounding_box")
             }
             nodes.append(part_node)
         
@@ -529,7 +540,11 @@ class GraphBuilder:
                 "parents": [],
                 "step_created": subasm["created_in_step"],
                 "layer": None,  # Will be set later
-                "completeness_markers": subasm.get("completeness_markers", {})
+                "completeness_markers": subasm.get("completeness_markers", {}),
+                # SAM3 segmentation data
+                "image_path": subasm.get("cropped_image_path"),
+                "mask_path": subasm.get("mask_path"),
+                "bounding_box": subasm.get("bounding_box")
             }
             nodes.append(subasm_node)
         

@@ -183,11 +183,20 @@ class PartAssociationModule:
                         "appearance_description": part.get("description", ""),
                         "first_appears_step": step.get("step_number", step_idx + 1),
                         "total_quantity": part.get("quantity", 1),
-                        "equivalent_parts": []
+                        "equivalent_parts": [],
+                        # SAM3 segmentation data (from first appearance)
+                        "cropped_image_path": part.get("cropped_image_path"),
+                        "mask_path": part.get("mask_path"),
+                        "bounding_box": part.get("bounding_box")
                     }
                 else:
                     # Update quantity and track multiple appearances
                     parts_map[signature]["total_quantity"] += part.get("quantity", 1)
+                    # Update image paths if not set and available in this step
+                    if not parts_map[signature].get("cropped_image_path") and part.get("cropped_image_path"):
+                        parts_map[signature]["cropped_image_path"] = part.get("cropped_image_path")
+                        parts_map[signature]["mask_path"] = part.get("mask_path")
+                        parts_map[signature]["bounding_box"] = part.get("bounding_box")
         
         return list(parts_map.values())
     

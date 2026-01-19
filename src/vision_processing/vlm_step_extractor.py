@@ -355,15 +355,15 @@ class VLMStepExtractor:
     def extract_part_identifiers(self, result: Dict[str, Any]) -> List[Dict[str, str]]:
         """
         Extract and normalize part identifiers from extraction result.
-        
+
         Args:
             result: Extraction result
-        
+
         Returns:
             List of normalized part identifiers
         """
         parts = result.get("parts_required", [])
-        
+
         identifiers = []
         for part in parts:
             identifier = {
@@ -374,6 +374,6 @@ class VLMStepExtractor:
                 "quantity": part.get("quantity", 1)
             }
             identifiers.append(identifier)
-        
+
         return identifiers
 
