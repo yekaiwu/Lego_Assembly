@@ -336,19 +336,56 @@ class RetrieverService:
     ) -> List[Dict[str, Any]]:
         """
         Hybrid retrieval combining semantic search with keyword and heuristic boosting.
-        
+        Includes metadata chunk for high-level queries about the model.
+
         Args:
             query: User query
             manual_id: Manual ID
             top_k: Max results
             image_analysis: Optional image analysis for part-based boosting
-        
+
         Returns:
             List of contexts
         """
+        # Check if query is high-level (about the model/overview)
+        high_level_keywords = ['what', 'model', 'building', 'overview', 'summary', 'am i', 'are we']
+        is_high_level_query = any(kw in query.lower() for kw in high_level_keywords)
+
+        # Try to include metadata chunk for high-level queries
+        metadata_chunk = None
+        if is_high_level_query:
+            try:
+                metadata_results = self.chroma.query(
+                    query_text=query,
+                    n_results=1,
+                    where={
+                        "$and": [
+                            {"manual_id": manual_id},
+                            {"chunk_type": "metadata"}
+                        ]
+                    }
+                )
+
+                if metadata_results and 'documents' in metadata_results and len(metadata_results['documents'][0]) > 0:
+                    metadata_chunk = {
+                        'id': metadata_results['ids'][0][0] if metadata_results.get('ids') else 'metadata_chunk',
+                        'content': metadata_results['documents'][0][0],
+                        'metadata': metadata_results['metadatas'][0][0],
+                        'similarity_score': 1.0,
+                        'final_score': 1.5,  # High priority
+                        'step_number': 0,
+                        'image_path': '',
+                        'keyword_boost': 0.0,
+                        'step_boost': 0.0,
+                        'part_boost': 0.0
+                    }
+                    logger.info("Including metadata chunk for high-level query")
+            except Exception as e:
+                logger.debug(f"Could not retrieve metadata chunk: {e}")
+
         # Expand query with variations
         expanded_queries = self._expand_query(query)
-        
+
         all_results = []
         seen_ids = set()
         
@@ -407,12 +444,18 @@ class RetrieverService:
         
         # Sort by final score and take top_k
         all_results.sort(key=lambda x: x['final_score'], reverse=True)
-        
+
         # Apply minimum relevance threshold (relaxed)
         filtered_results = [r for r in all_results if r['final_score'] > 0.2]
-        
-        logger.info(f"Hybrid retrieval: {len(filtered_results[:top_k])} contexts (from {len(all_results)} candidates)")
-        return filtered_results[:top_k]
+
+        # Prepend metadata chunk if available (for high-level queries)
+        if metadata_chunk:
+            final_results = [metadata_chunk] + filtered_results[:top_k-1]
+        else:
+            final_results = filtered_results[:top_k]
+
+        logger.info(f"Hybrid retrieval: {len(final_results)} contexts (from {len(all_results)} candidates)")
+        return final_results
     
     def _expand_query(self, query: str) -> List[str]:
         """

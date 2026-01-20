@@ -3,7 +3,7 @@ Generator component for RAG pipeline.
 Handles LLM-based response generation with retrieved context.
 """
 
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from loguru import logger
 
 from ..config import get_settings
@@ -33,16 +33,20 @@ class GeneratorService:
         query: str,
         contexts: List[Dict[str, Any]],
         manual_id: str,
-        include_graph_context: bool = True
+        include_graph_context: bool = True,
+        current_step: Optional[int] = None,
+        image_analysis: Optional[Dict[str, Any]] = None
     ) -> str:
         """
-        Generate a response using retrieved contexts with optional graph enrichment.
+        Generate a response using retrieved contexts with comprehensive enrichment.
 
         Args:
             query: User query
             contexts: Retrieved context chunks
             manual_id: Manual identifier
             include_graph_context: Whether to enrich with graph context
+            current_step: Optional current step number for state-aware responses
+            image_analysis: Optional image analysis results for context
 
         Returns:
             Generated response text
@@ -52,35 +56,53 @@ class GeneratorService:
             if include_graph_context:
                 contexts = self.enrich_with_graph_context(contexts, manual_id)
 
-            # Build context string
-            context_str = self._format_contexts(contexts)
+            # Build COMPREHENSIVE context (includes metadata, state, etc.)
+            comprehensive_context = self._build_comprehensive_context(
+                manual_id=manual_id,
+                query=query,
+                contexts=contexts,
+                current_step=current_step,
+                image_analysis=image_analysis
+            )
 
-            # Create system prompt
-            system_prompt = """You are a helpful LEGO assembly assistant. Your role is to provide clear,
-            step-by-step guidance for building LEGO models based on instruction manuals.
+            # Enhanced system prompt for flexible query handling
+            system_prompt = """You are a helpful LEGO assembly assistant with access to comprehensive assembly information. Your role is to answer questions about LEGO model assembly.
 
-            Use the provided context to answer questions accurately. If you reference specific steps,
-            mention the step number. If parts are mentioned, describe them clearly with color and shape.
+You have access to:
+- Model information (what is being built, total parts, steps, components)
+- Step-by-step assembly instructions
+- Assembly structure (subassemblies, hierarchies, part relationships)
+- Current assembly state (if provided)
+- Detected parts from user photos (if provided)
 
-            When structural information is available (subassemblies, part roles, hierarchies), include
-            it to help the user understand how components fit into the larger assembly.
+**Your capabilities:**
+- Answer questions about what model is being built
+- Provide step-by-step guidance for assembly
+- Identify parts and their locations
+- Explain assembly structure and relationships
+- Help with troubleshooting and corrections
+- Estimate current progress and next steps
 
-            Be concise but thorough. If the user asks about a specific step, provide detailed instructions
-            for that step and mention what comes before/after if relevant.
+**Guidelines:**
+- For "what am I building" questions: Use model metadata and subassembly clues
+- For step questions: Reference specific step numbers
+- For part questions: Mention color and shape clearly
+- For structural questions: Reference subassemblies and hierarchies
+- Be confident when you have clear information
+- If information is missing, say so clearly
 
-            If the context doesn't contain enough information to answer the question, say so clearly."""
+Use the provided context to answer accurately. Reference specific details (step numbers, part colors/shapes, subassembly names) to support your answers."""
 
-            # Create user prompt
+            # Create user prompt with comprehensive context
             user_prompt = f"""Manual ID: {manual_id}
 
 User Question: {query}
 
-Relevant Context:
-{context_str}
+{comprehensive_context}
 
-Please provide a helpful answer based on the context above."""
+Please provide a helpful, accurate answer based on all the context above."""
 
-            # Call LLM
+            # Call LLM with increased max_tokens for comprehensive answers
             messages = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
@@ -89,7 +111,7 @@ Please provide a helpful answer based on the context above."""
             answer = self.client.generate(
                 messages=messages,
                 temperature=0.7,
-                max_tokens=1000
+                max_tokens=1500
             )
             logger.info(f"Generated response for query: {query[:50]}...")
             return answer
@@ -101,28 +123,125 @@ Please provide a helpful answer based on the context above."""
     def _format_contexts(self, contexts: List[Dict[str, Any]]) -> str:
         """
         Format retrieved contexts into a readable string.
-        
+
         Args:
             contexts: List of context dicts
-        
+
         Returns:
             Formatted context string
         """
         if not contexts:
             return "No relevant context found."
-        
+
         formatted_parts = []
-        
+
         for i, ctx in enumerate(contexts, 1):
             step_num = ctx.get('step_number', 'unknown')
             content = ctx.get('content', '')
             similarity = ctx.get('similarity_score', 0)
-            
+
             formatted_parts.append(
                 f"[Step {step_num}] (Relevance: {similarity:.2f})\n{content}"
             )
-        
+
         return "\n\n".join(formatted_parts)
+
+    def _build_comprehensive_context(
+        self,
+        manual_id: str,
+        query: str,
+        contexts: List[Dict[str, Any]],
+        current_step: Optional[int] = None,
+        image_analysis: Optional[Dict[str, Any]] = None
+    ) -> str:
+        """
+        Build comprehensive context string with all available information.
+
+        Includes:
+        - Model metadata (model name, total steps, parts, subassemblies)
+        - Graph overview (key components, structure)
+        - Current assembly state (progress, completion)
+        - Detected state from images (visible parts)
+        - Retrieved step contexts
+
+        Args:
+            manual_id: Manual identifier
+            query: User query
+            contexts: Retrieved context chunks
+            current_step: Optional current step number
+            image_analysis: Optional image analysis results
+
+        Returns:
+            Comprehensive context string
+        """
+        context_parts = []
+
+        # 1. MODEL METADATA (for "what am I building" queries)
+        try:
+            graph = self.graph_manager.load_graph(manual_id)
+            if graph:
+                metadata = graph.get("metadata", {})
+                nodes = graph.get("nodes", [])
+
+                # Get model node
+                model_node = next((n for n in nodes if n.get("type") == "model"), None)
+
+                model_info_parts = ["## Model Information"]
+                model_info_parts.append(f"- Model: {model_node.get('name', 'LEGO Model') if model_node else 'Unknown'}")
+                model_info_parts.append(f"- Total Steps: {metadata.get('total_steps', 'Unknown')}")
+                model_info_parts.append(f"- Total Parts: {metadata.get('total_parts', 'Unknown')}")
+                model_info_parts.append(f"- Total Subassemblies: {metadata.get('total_subassemblies', 'Unknown')}")
+
+                # Get descriptive subassembly names for model clues
+                subassemblies = [n for n in nodes if n.get("type") == "subassembly"]
+                if subassemblies:
+                    early_subassemblies = [s for s in subassemblies if s.get("step_created", 999) <= 5]
+                    if early_subassemblies:
+                        subasm_names = [s.get("name", "") for s in early_subassemblies[:5]]
+                        model_info_parts.append(f"- Key Components: {', '.join(subasm_names)}")
+
+                context_parts.append("\n".join(model_info_parts))
+
+        except Exception as e:
+            logger.warning(f"Could not load model metadata: {e}")
+
+        # 2. CURRENT ASSEMBLY STATE (if available)
+        if current_step:
+            state_info_parts = ["## Current Assembly State"]
+            state_info_parts.append(f"- Current Step: {current_step}")
+
+            # Get step state from graph
+            try:
+                graph = self.graph_manager.load_graph(manual_id)
+                if graph:
+                    step_state = self.graph_manager.get_step_state(manual_id, current_step)
+                    if step_state:
+                        final_state = step_state.get("final_state", {})
+                        completion = final_state.get("completion_percentage", 0)
+                        state_info_parts.append(f"- Progress: {completion:.1f}% complete")
+            except Exception as e:
+                logger.warning(f"Could not load step state: {e}")
+
+            context_parts.append("\n".join(state_info_parts))
+
+        # 3. DETECTED STATE FROM IMAGES (if available)
+        if image_analysis:
+            detected_parts = image_analysis.get("detected_parts", [])
+            if detected_parts:
+                detected_info_parts = ["## Detected Assembly State"]
+                part_summary = ", ".join([
+                    f"{p.get('quantity', 1)}x {p.get('color', '')} {p.get('shape', '')}"
+                    for p in detected_parts[:5]
+                ])
+                detected_info_parts.append(f"- Visible Parts: {part_summary}")
+                context_parts.append("\n".join(detected_info_parts))
+
+        # 4. RETRIEVED STEP CONTEXTS
+        if contexts:
+            context_parts.append("## Assembly Instructions (Retrieved Steps)")
+            context_parts.append(self._format_contexts(contexts))
+
+        return "\n\n".join(context_parts)
     
     def generate_next_step_guidance(
         self,

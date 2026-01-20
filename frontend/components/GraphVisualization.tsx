@@ -293,6 +293,9 @@ export default function GraphVisualization() {
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onNodeClick={onNodeClick}
+            nodesDraggable={true}
+            nodesConnectable={false}
+            elementsSelectable={true}
             fitView
             attributionPosition="bottom-left"
           >

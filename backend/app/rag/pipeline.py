@@ -91,42 +91,10 @@ class RAGPipeline:
                 current_step = query_step
                 step_confidence = 1.0
                 logger.info(f"Using step from query: {current_step}")
-            
-            # Step 3: Handle query based on intent
-            # For GRAPH queries (next_step, parts_needed), use graph directly
-            # For HELP queries, use RAG retrieval + generation
 
-            if query_intent == "next_step" and current_step is not None:
-                # Use graph for next step (no LLM needed)
-                return self._handle_next_step_query(
-                    manual_id=manual_id,
-                    current_step=current_step,
-                    step_confidence=step_confidence,
-                    include_images=include_images
-                )
-
-            elif query_intent == "parts_needed":
-                # Use graph for parts (no LLM needed)
-                target_step = current_step + 1 if current_step else query_step
-                if target_step:
-                    return self._handle_parts_query(
-                        manual_id=manual_id,
-                        target_step=target_step,
-                        current_step=current_step,
-                        include_images=include_images
-                    )
-
-            elif query_intent == "current_step" and image_analysis:
-                # Return step detection result
-                if current_step:
-                    return self._handle_current_step_query(
-                        current_step=current_step,
-                        step_confidence=step_confidence,
-                        image_analysis=image_analysis
-                    )
-
-            # For HELP queries or fallback: use RAG
-            logger.info("📚 Using RAG for answer generation...")
+            # Step 3: Use comprehensive RAG approach for ALL queries
+            # The LLM will handle different query types using the enriched context
+            logger.info("📚 Using comprehensive RAG for answer generation...")
 
             # Step 3: Retrieve relevant context (with image analysis if available)
             contexts = self.retriever.retrieve_context(
@@ -144,14 +112,16 @@ class RAGPipeline:
                     current_step=current_step
                 )
 
-            # Step 4: Generate response with LLM
+            # Step 4: Generate response with LLM using comprehensive context
             answer = self.generator.generate_response(
                 query=question,
                 contexts=contexts,
-                manual_id=manual_id
+                manual_id=manual_id,
+                current_step=current_step,
+                image_analysis=image_analysis
             )
-            
-            # Step 4: Format sources
+
+            # Step 5: Format sources
             sources = []
             for ctx in contexts:
                 source = RetrievalResult(
@@ -162,34 +132,13 @@ class RAGPipeline:
                     image_path=ctx.get('image_path', '') if include_images else None
                 )
                 sources.append(source)
-            
-            # Step 5: Get next step guidance if applicable
-            next_step = None
-            guidance = None
-            if current_step is not None:
-                next_step = current_step + 1
-                current_ctx = self.retriever.get_step_info(manual_id, current_step)
-                next_ctx = self.retriever.get_step_info(manual_id, next_step)
 
-                if current_ctx and next_ctx:
-                    guidance = self.generator.generate_next_step_guidance(
-                        current_step,
-                        current_ctx,
-                        next_ctx
-                    )
-
-            # Step 6: Extract parts information from top result
-            parts_needed = None
-            if contexts:
-                parts_needed = self._extract_parts_from_context(contexts[0])
-
+            # Step 6: Return comprehensive response
+            # The LLM handles next step guidance and parts information based on comprehensive context
             return QueryResponse(
                 answer=answer,
                 sources=sources,
-                current_step=current_step,
-                next_step=next_step,
-                guidance=guidance,
-                parts_needed=parts_needed
+                current_step=current_step
             )
             
         except Exception as e:

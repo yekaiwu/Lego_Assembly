@@ -145,8 +145,9 @@ class SubassemblyDetector:
                 parent_subassembly = previous_subassembly
                 logger.debug(f"Step {step_number}: Default sequential link to {previous_subassembly}")
 
-        # Extract SAM3 assembled result data if available
-        assembled_result = step.get("assembled_result", {})
+        # Extract SAM3 assembled product data if available
+        # Note: RoboflowSAM3Segmenter writes to "assembled_product" field
+        assembled_product = step.get("assembled_product", {})
 
         # Create subassembly definition
         subassembly = {
@@ -163,10 +164,10 @@ class SubassemblyDetector:
                 "required_connections": self._extract_connections(actions),
                 "spatial_signature": self._extract_spatial_signature(step)
             },
-            # SAM3 segmentation data from assembled result (if available)
-            "cropped_image_path": assembled_result.get("cropped_image_path") if assembled_result else None,
-            "mask_path": assembled_result.get("mask_path") if assembled_result else None,
-            "bounding_box": assembled_result.get("bounding_box") if assembled_result else None
+            # SAM3 segmentation data from assembled product (if available)
+            "cropped_image_path": assembled_product.get("cropped_image_path") if assembled_product else None,
+            "mask_path": assembled_product.get("mask_path") if assembled_product else None,
+            "bounding_box": assembled_product.get("bounding_box") if assembled_product else None
         }
 
         return subassembly
