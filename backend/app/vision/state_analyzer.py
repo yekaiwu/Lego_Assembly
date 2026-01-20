@@ -225,9 +225,60 @@ class StateAnalyzer:
                 description_parts.append(f"Colors: {color_summary}")
         
         description_parts.append(f"\nAnalysis confidence: {confidence * 100:.0f}%")
-        
+
         return "\n".join(description_parts)
-    
+
+    def match_state_to_graph(
+        self,
+        analysis_result: Dict[str, Any],
+        manual_id: str,
+        top_k: int = 3
+    ) -> List[Dict[str, Any]]:
+        """
+        Match analyzed assembly state to graph nodes using precise graph matching.
+
+        This is more accurate than semantic search as it uses the hierarchical
+        assembly graph structure to find matching steps.
+
+        Args:
+            analysis_result: Result from analyze_assembly_state()
+            manual_id: Manual identifier
+            top_k: Number of top matches to return
+
+        Returns:
+            List of matching steps with confidence scores:
+            [
+                {
+                    "step_number": 5,
+                    "confidence": 0.87,
+                    "match_reason": "8/10 parts matched",
+                    "step_state": {...},
+                    "next_steps": [6]
+                },
+                ...
+            ]
+        """
+        try:
+            # Use graph-based state matcher for precise matching
+            from ..graph.state_matcher import StateMatcher
+
+            matcher = StateMatcher(self.graph_manager)
+            matches = matcher.match_state(
+                detected_state=analysis_result,
+                manual_id=manual_id,
+                top_k=top_k
+            )
+
+            logger.info(f"Graph matching found {len(matches)} potential steps")
+            if matches:
+                logger.info(f"Best match: Step {matches[0]['step_number']} "
+                           f"(confidence: {matches[0]['confidence']:.2f})")
+
+            return matches
+
+        except Exception as e:
+            logger.error(f"Error in graph-based state matching: {e}")
+            return []
 
 
 # Singleton instance
