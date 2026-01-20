@@ -29,6 +29,9 @@ interface GraphNode {
   parents: string[]
   step_created: number
   layer: number
+  image_path?: string
+  mask_path?: string
+  bounding_box?: number[]
 }
 
 interface GraphEdge {
@@ -315,6 +318,34 @@ export default function GraphVisualization() {
       {selectedNode && (
         <div className="bg-white rounded-lg shadow p-4">
           <h2 className="text-lg font-semibold mb-4">Node Details</h2>
+
+          {/* Image Section */}
+          {selectedNode.image_path && (
+            <div className="mb-4 pb-4 border-b border-gray-200">
+              <p className="text-sm text-gray-500 mb-2">Image</p>
+              <div className="flex justify-center">
+                <img
+                  src={api.getImageUrl(selectedNode.image_path)}
+                  alt={selectedNode.name}
+                  className="max-w-full h-auto max-h-64 object-contain border-2 border-gray-200 rounded-lg p-2 bg-gray-50"
+                  onError={(e) => {
+                    // Hide image on load error
+                    const img = e.target as HTMLImageElement
+                    img.style.display = 'none'
+                    // Optionally show a fallback message
+                    const parent = img.parentElement
+                    if (parent && !parent.querySelector('.error-message')) {
+                      const errorMsg = document.createElement('p')
+                      errorMsg.className = 'error-message text-sm text-gray-400 text-center'
+                      errorMsg.textContent = 'Image not available'
+                      parent.appendChild(errorMsg)
+                    }
+                  }}
+                />
+              </div>
+            </div>
+          )}
+
           <div className="space-y-3">
             <div>
               <p className="text-sm text-gray-500">Node ID</p>

@@ -166,27 +166,27 @@ class RAGPipeline:
             # Step 5: Get next step guidance if applicable
             next_step = None
             guidance = None
-            if step_number is not None:
-                next_step = step_number + 1
-                current_ctx = self.retriever.get_step_info(manual_id, step_number)
+            if current_step is not None:
+                next_step = current_step + 1
+                current_ctx = self.retriever.get_step_info(manual_id, current_step)
                 next_ctx = self.retriever.get_step_info(manual_id, next_step)
-                
+
                 if current_ctx and next_ctx:
                     guidance = self.generator.generate_next_step_guidance(
-                        step_number,
+                        current_step,
                         current_ctx,
                         next_ctx
                     )
-            
+
             # Step 6: Extract parts information from top result
             parts_needed = None
             if contexts:
                 parts_needed = self._extract_parts_from_context(contexts[0])
-            
+
             return QueryResponse(
                 answer=answer,
                 sources=sources,
-                current_step=step_number,
+                current_step=current_step,
                 next_step=next_step,
                 guidance=guidance,
                 parts_needed=parts_needed
