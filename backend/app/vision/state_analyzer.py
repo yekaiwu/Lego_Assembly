@@ -16,12 +16,13 @@ from src.api.litellm_vlm import UnifiedVLMClient
 from src.utils.config import get_config as get_phase1_config
 from ..graph.graph_manager import get_graph_manager
 from .prompt_manager import PromptManager
+from .visual_matcher import VisualMatcher
 
 
 class StateAnalyzer:
     """Analyzes user's physical assembly state from photos."""
 
-    def __init__(self, vlm_client=None):
+    def __init__(self, vlm_client=None, visual_matcher=None):
         """Initialize with VLM client from backend settings."""
         if vlm_client is None:
             # Use STATE_ANALYSIS_VLM from backend settings (configurable via .env)
@@ -35,9 +36,16 @@ class StateAnalyzer:
         else:
             self.vlm_client = vlm_client
             logger.info("StateAnalyzer initialized with provided VLM client")
-        
+
         self.graph_manager = get_graph_manager()
         self.prompt_manager = PromptManager()
+
+        # Initialize visual matcher for SAM-based visual matching
+        self.visual_matcher = visual_matcher or VisualMatcher()
+        if self.visual_matcher.is_available():
+            logger.info("Visual matching enabled (SAM available)")
+        else:
+            logger.info("Visual matching disabled (SAM not available)")
     
     def analyze_assembly_state(
         self,
@@ -78,7 +86,10 @@ class StateAnalyzer:
             
             # Structure the response
             structured_result = self._structure_analysis_result(result)
-            
+
+            # Store image paths for potential visual matching
+            structured_result["image_paths"] = image_paths
+
             logger.info(f"Analysis complete. Detected {len(structured_result.get('detected_parts', []))} parts")
             return structured_result
             
@@ -227,52 +238,142 @@ class StateAnalyzer:
         self,
         analysis_result: Dict[str, Any],
         manual_id: str,
-        top_k: int = 3
+        top_k: int = 3,
+        use_visual_matching: bool = True
     ) -> List[Dict[str, Any]]:
         """
-        Match analyzed assembly state to graph nodes using precise graph matching.
+        Match analyzed assembly state to graph nodes using text + visual matching.
 
-        This is more accurate than semantic search as it uses the hierarchical
-        assembly graph structure to find matching steps.
+        Combines text-based part matching with SAM-based visual similarity
+        for more robust and accurate step detection.
 
         Args:
             analysis_result: Result from analyze_assembly_state()
             manual_id: Manual identifier
             top_k: Number of top matches to return
+            use_visual_matching: Whether to use visual matching (default: True)
 
         Returns:
             List of matching steps with confidence scores:
             [
                 {
                     "step_number": 5,
-                    "confidence": 0.87,
-                    "match_reason": "8/10 parts matched",
+                    "combined_confidence": 0.85,  # Combined score (if visual enabled)
+                    "text_confidence": 0.87,
+                    "visual_confidence": 0.82,
+                    "match_reason": "Combined: 85% (text: 87%, visual: 82%)",
                     "step_state": {...},
-                    "next_steps": [6]
+                    "next_step": 6
                 },
                 ...
             ]
         """
         try:
-            # Use graph-based state matcher for precise matching
+            # Use graph-based state matcher for text-based matching
             from ..graph.state_matcher import StateMatcher
+            import os
 
             matcher = StateMatcher(self.graph_manager)
-            matches = matcher.match_state(
+
+            # Get weights from environment
+            visual_weight = float(os.getenv("VISUAL_MATCH_WEIGHT", "0.5"))
+            text_weight = float(os.getenv("TEXT_MATCH_WEIGHT", "0.5"))
+
+            # Normalize weights to ensure they sum to 1.0
+            total_weight = visual_weight + text_weight
+            if total_weight > 0:
+                visual_weight = visual_weight / total_weight
+                text_weight = text_weight / total_weight
+            else:
+                # Default to equal weights if both are 0
+                visual_weight = 0.5
+                text_weight = 0.5
+
+            logger.info(f"Match weights: Visual={visual_weight:.0%}, Text={text_weight:.0%}")
+
+            # Step 1: Visual matching (if enabled and available) - RUN FIRST
+            visual_matches = []
+            if use_visual_matching and self.visual_matcher.is_available():
+                image_paths = analysis_result.get("image_paths", [])
+
+                if image_paths:
+                    logger.info("=" * 60)
+                    logger.info("STEP 1: Running ORB visual matching with SAM3...")
+                    logger.info("=" * 60)
+                    visual_matches = self.visual_matcher.match_user_assembly_to_graph(
+                        user_image_paths=image_paths,
+                        manual_id=manual_id,
+                        graph_manager=self.graph_manager,
+                        top_k=top_k * 2  # Get more candidates for combining
+                    )
+
+                    logger.info(f"✓ ORB visual matching found {len(visual_matches)} potential steps")
+                    if visual_matches:
+                        logger.info(
+                            f"  Best visual match: Step {visual_matches[0]['step_number']} "
+                            f"(similarity: {visual_matches[0]['visual_similarity']:.2%})"
+                        )
+                        # Log top 3 visual matches
+                        for i, match in enumerate(visual_matches[:3], 1):
+                            logger.info(
+                                f"  #{i}: Step {match['step_number']} - "
+                                f"{match['visual_similarity']:.2%} similarity"
+                            )
+                else:
+                    logger.info("No image paths available for visual matching")
+            else:
+                if not use_visual_matching:
+                    logger.info("Visual matching disabled by parameter")
+                else:
+                    logger.info("Visual matching not available (SAM not loaded)")
+
+            # Step 2: Text-based matching using detected parts - RUN SECOND
+            logger.info("=" * 60)
+            logger.info("STEP 2: Running text-based part matching...")
+            logger.info("=" * 60)
+            text_matches = matcher.match_state(
                 detected_state=analysis_result,
                 manual_id=manual_id,
-                top_k=top_k
+                top_k=top_k * 2  # Get more candidates for combining
             )
 
-            logger.info(f"Graph matching found {len(matches)} potential steps")
-            if matches:
-                logger.info(f"Best match: Step {matches[0]['step_number']} "
-                           f"(confidence: {matches[0]['confidence']:.2f})")
+            logger.info(f"✓ Text matching found {len(text_matches)} potential steps")
+            if text_matches:
+                logger.info(f"  Best text match: Step {text_matches[0]['step_number']} "
+                           f"(confidence: {text_matches[0]['confidence']:.2%})")
+                # Log top 3 text matches
+                for i, match in enumerate(text_matches[:3], 1):
+                    logger.info(
+                        f"  #{i}: Step {match['step_number']} - "
+                        f"{match['confidence']:.2%} confidence"
+                    )
 
-            return matches
+            # Step 3: Combine visual and text matches
+            logger.info("=" * 60)
+            logger.info(f"STEP 3: Combining results (Visual: {visual_weight:.0%}, Text: {text_weight:.0%})...")
+            logger.info("=" * 60)
+
+            if visual_matches:
+                combined_matches = matcher.combine_text_and_visual_matches(
+                    text_matches=text_matches,
+                    visual_matches=visual_matches,
+                    text_weight=text_weight,
+                    visual_weight=visual_weight,
+                    top_k=top_k
+                )
+
+                logger.info(f"✓ Combined matching complete, returning top {len(combined_matches)} results")
+                if combined_matches:
+                    logger.info(f"  Best combined match: Step {combined_matches[0]['step_number']} "
+                               f"(score: {combined_matches[0].get('combined_confidence', 0):.2%})")
+                return combined_matches
+            else:
+                # Fallback: return text-only matches
+                logger.info("⚠ Using text-only matches (no visual matches available)")
+                return text_matches[:top_k]
 
         except Exception as e:
-            logger.error(f"Error in graph-based state matching: {e}")
+            logger.error(f"Error in state matching: {e}")
             return []
 
 

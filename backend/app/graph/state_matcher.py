@@ -1,9 +1,9 @@
 """
 State Matcher - Matches detected assembly state to graph nodes.
-Uses hierarchical graph structure + part similarity scoring.
+Uses hierarchical graph structure + part similarity scoring + visual matching.
 """
 
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Optional, Tuple, Set
 from loguru import logger
 from collections import Counter
 
@@ -108,6 +108,115 @@ class StateMatcher:
             logger.info(f"Best match: Step {top_matches[0]['step_number']} "
                        f"(confidence: {top_matches[0]['confidence']:.2f}) "
                        f"- {top_matches[0]['match_reason']}")
+
+        return top_matches
+
+    def combine_text_and_visual_matches(
+        self,
+        text_matches: List[Dict[str, Any]],
+        visual_matches: List[Dict[str, Any]],
+        text_weight: float = 0.6,
+        visual_weight: float = 0.4,
+        top_k: int = 5
+    ) -> List[Dict[str, Any]]:
+        """
+        Combine text-based (part matching) and visual similarity matches.
+
+        Uses weighted combination of both signals for more robust matching.
+
+        Args:
+            text_matches: Matches from match_state() (text-based part matching)
+            visual_matches: Matches from VisualMatcher (visual similarity)
+            text_weight: Weight for text-based matching (default: 0.6)
+            visual_weight: Weight for visual matching (default: 0.4)
+            top_k: Number of top matches to return
+
+        Returns:
+            Combined matches sorted by combined score:
+            [
+                {
+                    "step_number": 3,
+                    "combined_confidence": 0.82,
+                    "text_confidence": 0.87,
+                    "visual_confidence": 0.75,
+                    "match_reason": "Combined: 82% (text: 87%, visual: 75%)",
+                    "step_state": {...},
+                    "next_step": 4,
+                    ...
+                },
+                ...
+            ]
+        """
+        # Build lookup maps
+        text_by_step = {m["step_number"]: m for m in text_matches}
+        visual_by_step = {m["step_number"]: m for m in visual_matches}
+
+        # Get all unique step numbers
+        all_steps = set(text_by_step.keys()) | set(visual_by_step.keys())
+
+        combined_matches = []
+
+        for step_num in all_steps:
+            text_match = text_by_step.get(step_num)
+            visual_match = visual_by_step.get(step_num)
+
+            # Get confidence scores (default to 0 if not present)
+            text_conf = text_match["confidence"] if text_match else 0.0
+            visual_conf = visual_match["visual_similarity"] if visual_match else 0.0
+
+            # Compute weighted combined score
+            combined_conf = text_weight * text_conf + visual_weight * visual_conf
+
+            # Build combined match result
+            combined = {
+                "step_number": step_num,
+                "combined_confidence": combined_conf,
+                "text_confidence": text_conf,
+                "visual_confidence": visual_conf,
+                "match_reason": (
+                    f"Combined: {combined_conf:.0%} "
+                    f"(text: {text_conf:.0%}, visual: {visual_conf:.0%})"
+                ),
+                "next_step": step_num + 1
+            }
+
+            # Include step_state from text match (preferred) or visual match
+            if text_match and "step_state" in text_match:
+                combined["step_state"] = text_match["step_state"]
+            elif visual_match and "step_state" in visual_match:
+                combined["step_state"] = visual_match["step_state"]
+
+            # Include additional details from both matches
+            if text_match:
+                combined["text_match_reason"] = text_match.get("match_reason")
+                combined["precision"] = text_match.get("precision")
+                combined["recall"] = text_match.get("recall")
+                combined["matched_node_ids"] = text_match.get("matched_node_ids", [])
+
+            if visual_match:
+                combined["visual_match_reason"] = visual_match.get("match_reason")
+                combined["reference_image_path"] = visual_match.get("reference_image_path")
+                combined["segmentation_confidence"] = visual_match.get("segmentation_confidence")
+
+            combined_matches.append(combined)
+
+        # Sort by combined confidence
+        combined_matches.sort(key=lambda x: x["combined_confidence"], reverse=True)
+        top_matches = combined_matches[:top_k]
+
+        logger.info(
+            f"Combined {len(text_matches)} text + {len(visual_matches)} visual matches "
+            f"-> {len(combined_matches)} total, returning top {len(top_matches)}"
+        )
+
+        if top_matches:
+            best = top_matches[0]
+            logger.info(
+                f"Best combined match: Step {best['step_number']} "
+                f"(combined: {best['combined_confidence']:.2f}, "
+                f"text: {best['text_confidence']:.2f}, "
+                f"visual: {best['visual_confidence']:.2f})"
+            )
 
         return top_matches
 

@@ -5,6 +5,7 @@ Supports 100+ vision models from different providers with a single interface.
 
 import json
 import os
+import time
 from typing import List, Dict, Any, Optional
 from loguru import logger
 import litellm
@@ -54,6 +55,53 @@ class UnifiedVLMClient:
             from app.vision.prompt_manager import get_prompt_manager
             self._prompt_manager = get_prompt_manager()
         return self._prompt_manager
+
+    def _call_with_retry(self, messages: List[Dict], response_format: Optional[Dict] = None, max_retries: int = 5):
+        """
+        Call litellm.completion with retry logic for 503 overloaded errors.
+
+        Args:
+            messages: Messages to send to the model
+            response_format: Optional response format (e.g., {"type": "json_object"})
+            max_retries: Maximum number of retry attempts
+
+        Returns:
+            LiteLLM completion response
+
+        Raises:
+            Exception: If all retries fail or non-retryable error occurs
+        """
+        retry_delay = 2  # Initial delay in seconds
+
+        for attempt in range(max_retries):
+            try:
+                kwargs = {
+                    "model": self.model,
+                    "messages": messages,
+                    "temperature": 0.7,
+                    "max_tokens": 60000
+                }
+                if response_format:
+                    kwargs["response_format"] = response_format
+
+                response = litellm.completion(**kwargs)
+                return response
+
+            except litellm.InternalServerError as e:
+                error_str = str(e)
+                # Check if it's a 503 overloaded error
+                if "503" in error_str and ("overloaded" in error_str.lower() or "unavailable" in error_str.lower()):
+                    if attempt < max_retries - 1:
+                        wait_time = retry_delay * (2 ** attempt)  # Exponential backoff
+                        logger.warning(f"Model overloaded (503), retrying in {wait_time}s (attempt {attempt + 1}/{max_retries})...")
+                        time.sleep(wait_time)
+                        continue
+                    else:
+                        logger.error(f"LiteLLM call failed after {max_retries} retries: {e}")
+                        raise
+                else:
+                    # Non-503 InternalServerError, don't retry
+                    raise
 
     def extract_step_info(
         self,
@@ -123,14 +171,9 @@ class UnifiedVLMClient:
 
         messages = [{"role": "user", "content": content}]
 
-        # Call LiteLLM
+        # Call LiteLLM with retry logic
         try:
-            response = litellm.completion(
-                model=self.model,
-                messages=messages,
-                temperature=0.7,
-                max_tokens=60000
-            )
+            response = self._call_with_retry(messages)
 
             result_text = response.choices[0].message.content
 
@@ -217,14 +260,9 @@ class UnifiedVLMClient:
 
         messages = [{"role": "user", "content": content}]
 
-        # Call LiteLLM
+        # Call LiteLLM with retry logic
         try:
-            response = litellm.completion(
-                model=self.model,
-                messages=messages,
-                temperature=0.7,
-                max_tokens=60000
-            )
+            response = self._call_with_retry(messages)
 
             result_text = response.choices[0].message.content
 
@@ -377,15 +415,9 @@ class UnifiedVLMClient:
 
         messages = [{"role": "user", "content": content}]
 
-        # Call LiteLLM
+        # Call LiteLLM with retry logic
         try:
-            response = litellm.completion(
-                model=self.model,
-                messages=messages,
-                temperature=0.7,
-                max_tokens=60000,
-                response_format={"type": "json_object"}  # Request JSON mode
-            )
+            response = self._call_with_retry(messages, response_format={"type": "json_object"})
 
             # Handle case where content is None
             response_text = response.choices[0].message.content
@@ -485,14 +517,9 @@ class UnifiedVLMClient:
             ]
         }]
 
-        # Call LiteLLM
+        # Call LiteLLM with retry logic
         try:
-            response = litellm.completion(
-                model=self.model,
-                messages=messages,
-                temperature=0.7,
-                max_tokens=60000
-            )
+            response = self._call_with_retry(messages)
 
             # Handle case where content is None
             content = response.choices[0].message.content

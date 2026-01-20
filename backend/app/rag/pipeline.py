@@ -83,12 +83,29 @@ class RAGPipeline:
                         best_match = graph_matches[0]
                         current_step = best_match['step_number']  # Step they completed
                         next_step = best_match.get('next_step')   # Step to do next
-                        step_confidence = best_match['confidence']
+
+                        # Handle both combined (visual+text) and text-only confidence
+                        step_confidence = best_match.get('combined_confidence', best_match.get('confidence', 0.0))
+
                         image_analysis['current_step'] = current_step
                         image_analysis['next_step'] = next_step
                         image_analysis['step_confidence'] = step_confidence
                         image_analysis['matched_node_ids'] = best_match.get('matched_node_ids', [])
-                        logger.info(f"✓ Graph match: Completed Step {current_step} (confidence: {step_confidence:.2f})")
+
+                        # Log detailed match information
+                        if 'combined_confidence' in best_match:
+                            # Visual matching was used
+                            text_conf = best_match.get('text_confidence', 0.0)
+                            visual_conf = best_match.get('visual_confidence', 0.0)
+                            logger.info(
+                                f"✓ Combined match: Completed Step {current_step} "
+                                f"(combined: {step_confidence:.2f}, "
+                                f"text: {text_conf:.2f}, visual: {visual_conf:.2f})"
+                            )
+                        else:
+                            # Text-only matching
+                            logger.info(f"✓ Text match: Completed Step {current_step} (confidence: {step_confidence:.2f})")
+
                         if next_step:
                             logger.info(f"  Next step: {next_step}")
 
