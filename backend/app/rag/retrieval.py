@@ -847,6 +847,88 @@ class RetrieverService:
             # Fall back to hybrid retrieval
             return self._retrieve_hybrid(query, manual_id, top_k, image_analysis)
     
+    def retrieve_for_step(
+        self,
+        query: str,
+        manual_id: str,
+        step_number: int,
+        top_k: int = 5
+    ) -> List[Dict[str, Any]]:
+        """
+        Retrieve documents specifically for a step.
+        Applies step_number filter for precision.
+
+        Args:
+            query: Search query
+            manual_id: Manual identifier
+            step_number: Specific step number to filter by
+            top_k: Number of results to return
+
+        Returns:
+            List of retrieved documents
+        """
+        # Add step filter to metadata
+        filters = {"manual_id": manual_id, "step_number": step_number}
+
+        logger.info(f"Retrieving for step {step_number} in {manual_id}")
+
+        try:
+            results = self.retrieve(
+                query=query,
+                manual_id=manual_id,
+                top_k=top_k,
+                filters=filters
+            )
+
+            logger.info(f"Retrieved {len(results)} docs for step {step_number}")
+            return results
+
+        except Exception as e:
+            logger.error(f"Step retrieval error: {e}")
+            return []
+
+    def retrieve_step_range(
+        self,
+        query: str,
+        manual_id: str,
+        step_range: Tuple[int, int],
+        top_k: int = 5
+    ) -> List[Dict[str, Any]]:
+        """
+        Retrieve documents for a range of steps.
+        Useful when current step is uncertain.
+
+        Args:
+            query: Search query
+            manual_id: Manual identifier
+            step_range: Tuple of (start_step, end_step) inclusive
+            top_k: Number of results to return
+
+        Returns:
+            List of retrieved documents, deduplicated and sorted by score
+        """
+        start_step, end_step = step_range
+        logger.info(f"Retrieving for step range {start_step}-{end_step}")
+
+        all_results = []
+        for step in range(start_step, end_step + 1):
+            results = self.retrieve_for_step(
+                query, manual_id, step, top_k=2
+            )
+            all_results.extend(results)
+
+        # Deduplicate based on document ID
+        unique_results = {r.get("id", str(i)): r for i, r in enumerate(all_results)}.values()
+
+        # Sort by score (if available)
+        sorted_results = sorted(
+            unique_results,
+            key=lambda x: x.get("score", 0),
+            reverse=True
+        )
+
+        return list(sorted_results)[:top_k]
+
     def _extract_entities_from_query(
         self,
         query: str,
@@ -854,11 +936,11 @@ class RetrieverService:
     ) -> List[Dict[str, str]]:
         """
         Extract structural entities (parts, subassemblies) from query.
-        
+
         Args:
             query: User query
             manual_id: Manual identifier
-        
+
         Returns:
             List of entities with type and name
         """
