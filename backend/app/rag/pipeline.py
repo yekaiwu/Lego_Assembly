@@ -58,6 +58,7 @@ class RAGPipeline:
             # Step 1: Analyze user images if provided (VLM analysis)
             image_analysis = None
             current_step = None
+            next_step = None
             step_confidence = 0.0
 
             if user_images:
@@ -79,11 +80,17 @@ class RAGPipeline:
                     )
 
                     if graph_matches:
-                        current_step = graph_matches[0]['step_number']
-                        step_confidence = graph_matches[0]['confidence']
+                        best_match = graph_matches[0]
+                        current_step = best_match['step_number']  # Step they completed
+                        next_step = best_match.get('next_step')   # Step to do next
+                        step_confidence = best_match['confidence']
                         image_analysis['current_step'] = current_step
+                        image_analysis['next_step'] = next_step
                         image_analysis['step_confidence'] = step_confidence
-                        logger.info(f"✓ Graph match: Step {current_step} (confidence: {step_confidence:.2f})")
+                        image_analysis['matched_node_ids'] = best_match.get('matched_node_ids', [])
+                        logger.info(f"✓ Graph match: Completed Step {current_step} (confidence: {step_confidence:.2f})")
+                        if next_step:
+                            logger.info(f"  Next step: {next_step}")
 
             # Step 2: Extract step number if mentioned in query (overrides detection)
             query_step = self._extract_step_number(question)
@@ -97,13 +104,40 @@ class RAGPipeline:
             logger.info("📚 Using comprehensive RAG for answer generation...")
 
             # Step 3: Retrieve relevant context (with image analysis if available)
-            contexts = self.retriever.retrieve_context(
-                query=question,
-                manual_id=manual_id,
-                top_k=max_results,
-                step_number=current_step,
-                image_analysis=image_analysis
-            )
+            # If both current_step and next_step are available, retrieve contexts for both
+            contexts = []
+
+            if current_step and next_step:
+                # Retrieve contexts for the completed step
+                logger.info(f"Retrieving context for completed step {current_step}")
+                current_contexts = self.retriever.retrieve_context(
+                    query=question,
+                    manual_id=manual_id,
+                    top_k=max(2, max_results // 2),  # Allocate half to current step
+                    step_number=current_step,
+                    image_analysis=image_analysis
+                )
+                contexts.extend(current_contexts)
+
+                # Retrieve contexts for the next step
+                logger.info(f"Retrieving context for next step {next_step}")
+                next_contexts = self.retriever.retrieve_context(
+                    query=f"what to do in step {next_step}",  # Guide retrieval toward next step
+                    manual_id=manual_id,
+                    top_k=max(3, max_results // 2),  # Allocate half to next step
+                    step_number=next_step,
+                    image_analysis=None  # Don't pass image analysis for next step
+                )
+                contexts.extend(next_contexts)
+            else:
+                # Single step retrieval (fallback)
+                contexts = self.retriever.retrieve_context(
+                    query=question,
+                    manual_id=manual_id,
+                    top_k=max_results,
+                    step_number=current_step,
+                    image_analysis=image_analysis
+                )
 
             if not contexts:
                 return QueryResponse(
@@ -113,11 +147,13 @@ class RAGPipeline:
                 )
 
             # Step 4: Generate response with LLM using comprehensive context
+            # Pass both current_step (completed) and next_step for better guidance
             answer = self.generator.generate_response(
                 query=question,
                 contexts=contexts,
                 manual_id=manual_id,
                 current_step=current_step,
+                next_step=next_step,
                 image_analysis=image_analysis
             )
 
@@ -133,12 +169,37 @@ class RAGPipeline:
                 )
                 sources.append(source)
 
-            # Step 6: Return comprehensive response
-            # The LLM handles next step guidance and parts information based on comprehensive context
+            # Step 6: Format image analysis for response
+            image_analysis_result = None
+            if image_analysis:
+                from ..models.schemas import ImageAnalysisResult, DetectedPart
+
+                # Convert detected parts to DetectedPart schema
+                detected_parts_formatted = [
+                    DetectedPart(
+                        description=p.get("description", ""),
+                        color=p.get("color", ""),
+                        shape=p.get("shape", ""),
+                        quantity=p.get("quantity", 1),
+                        confidence=0.8  # Default confidence from VLM analysis
+                    )
+                    for p in image_analysis.get("detected_parts", [])
+                ]
+
+                image_analysis_result = ImageAnalysisResult(
+                    detected_parts=detected_parts_formatted,
+                    confidence=image_analysis.get("step_confidence", 0.0),
+                    matched_node_ids=image_analysis.get("matched_node_ids", []),
+                    unmatched_parts=[]  # Could add logic to identify unmatched parts
+                )
+
+            # Step 7: Return comprehensive response with image analysis
             return QueryResponse(
                 answer=answer,
                 sources=sources,
-                current_step=current_step
+                current_step=current_step,
+                next_step=next_step,
+                image_analysis=image_analysis_result
             )
             
         except Exception as e:

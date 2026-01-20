@@ -116,6 +116,14 @@ class RetrievalResult(BaseModel):
     image_path: Optional[str] = None
 
 
+class ImageAnalysisResult(BaseModel):
+    """VLM analysis results from user's uploaded images."""
+    detected_parts: List[DetectedPart] = []
+    confidence: float = 0.0
+    matched_node_ids: List[str] = []  # Node IDs that were matched
+    unmatched_parts: List[DetectedPart] = []  # Parts detected but not in catalog
+
+
 class QueryResponse(BaseModel):
     """Response to a query."""
     answer: str
@@ -124,6 +132,7 @@ class QueryResponse(BaseModel):
     next_step: Optional[int] = None
     guidance: Optional[str] = None
     parts_needed: Optional[List[PartInfo]] = None
+    image_analysis: Optional[ImageAnalysisResult] = None  # VLM analysis if images uploaded
 
 
 # ==================== Health & Status ====================

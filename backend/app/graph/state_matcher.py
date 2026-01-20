@@ -34,10 +34,13 @@ class StateMatcher:
         top_k: int = 5
     ) -> List[Dict[str, Any]]:
         """
-        Match detected state to graph step nodes.
+        Match detected assembly state using pre-computed step_states.
+
+        OPTIMIZED APPROACH: Uses step_states with existing_nodes for O(n) matching.
+        Each step_state contains cumulative list of all nodes up to that step.
 
         Args:
-            detected_state: Output from VisualStateExtractor
+            detected_state: Output from StateAnalyzer with detected_parts
             manual_id: Manual identifier
             top_k: Number of top matches to return
 
@@ -45,11 +48,11 @@ class StateMatcher:
             List of matches with scores:
             [
                 {
-                    "step_number": 5,
+                    "step_number": 3,  # The step they completed
                     "confidence": 0.87,
-                    "match_reason": "8/10 parts matched",
-                    "step_state": {...},  # Full step state from graph
-                    "next_steps": [6],    # Possible next steps
+                    "match_reason": "8/9 parts matched (F1: 0.87)",
+                    "step_state": {...},  # The matching step state
+                    "next_step": 4  # The next step to do
                 },
                 ...
             ]
@@ -59,41 +62,42 @@ class StateMatcher:
             logger.error(f"No graph found for manual {manual_id}")
             return []
 
-        # Extract parts from detected state
-        detected_parts = self._normalize_parts(detected_state.get("detected_parts", []))
-        detected_subassemblies = detected_state.get("subassemblies", [])
-
-        if not detected_parts and not detected_subassemblies:
-            logger.warning("No parts or subassemblies detected in state")
+        # Extract detected parts
+        detected_parts = detected_state.get("detected_parts", [])
+        if not detected_parts:
+            logger.warning("No parts detected in state")
             return []
 
-        logger.debug(f"Matching {len(detected_parts)} detected parts against graph")
+        logger.debug(f"Matching {len(detected_parts)} detected parts against step states")
 
-        # Score all step states in graph
-        matches = []
+        # Build part signature → node_id mapping from part catalog
+        part_catalog = graph.get("part_catalog", {}).get("parts_catalog", {})
+        if not part_catalog:
+            logger.error("No part catalog found in graph")
+            return []
+
+        signature_to_node = self._build_part_signature_map(part_catalog, graph.get("nodes", []))
+
+        # Convert detected parts to node IDs
+        detected_node_ids = self._convert_parts_to_node_ids(detected_parts, signature_to_node)
+
+        if not detected_node_ids:
+            logger.warning("Could not map detected parts to node IDs")
+            return []
+
+        logger.debug(f"Mapped to {len(detected_node_ids)} node IDs")
+
+        # Match against step_states (most complete first)
         step_states = graph.get("step_states", [])
+        if not step_states:
+            logger.error("No step_states found in graph")
+            return []
 
-        for step_state in step_states:
-            step_number = step_state.get("step_number")
-            if step_number is None:
-                continue
-
-            # Compute similarity score
-            score, reason = self._compute_similarity(
-                detected_parts,
-                detected_subassemblies,
-                step_state,
-                step_number
-            )
-
-            if score > 0.1:  # Minimum threshold
-                matches.append({
-                    "step_number": step_number,
-                    "confidence": score,
-                    "match_reason": reason,
-                    "step_state": step_state,
-                    "next_steps": self._get_next_steps(step_number, step_states),
-                })
+        matches = self._score_step_states(
+            detected_node_ids,
+            step_states,
+            graph.get("nodes", [])
+        )
 
         # Sort by confidence and return top-k
         matches.sort(key=lambda x: x["confidence"], reverse=True)
@@ -102,7 +106,8 @@ class StateMatcher:
         logger.info(f"Found {len(matches)} potential matches, returning top {len(top_matches)}")
         if top_matches:
             logger.info(f"Best match: Step {top_matches[0]['step_number']} "
-                       f"(confidence: {top_matches[0]['confidence']:.2f})")
+                       f"(confidence: {top_matches[0]['confidence']:.2f}) "
+                       f"- {top_matches[0]['match_reason']}")
 
         return top_matches
 
@@ -133,93 +138,142 @@ class StateMatcher:
 
         return normalized
 
-    def _compute_similarity(
+    def _build_part_signature_map(
         self,
-        detected_parts: List[str],
-        detected_subassemblies: List[Dict],
-        step_state: Dict[str, Any],
-        step_number: int
-    ) -> Tuple[float, str]:
+        part_catalog: Dict[str, Any],
+        nodes: List[Dict[str, Any]]
+    ) -> Dict[str, str]:
         """
-        Compute similarity score between detected state and step state.
+        Build mapping from part signatures to node IDs.
+
+        A part signature is "color:shape" which uniquely identifies parts.
+
+        Args:
+            part_catalog: Part catalog from graph
+            nodes: All nodes from graph
 
         Returns:
-            (score, reason) tuple
+            Dict mapping "color:shape" → "part_0", "part_1", etc.
         """
-        # Extract step state parts
-        step_parts = self._extract_step_parts(step_state)
-        step_assembly_desc = step_state.get("assembly_description", "")
+        signature_map = {}
 
-        # 1. Part overlap score (Jaccard similarity)
-        detected_set = set(detected_parts)
-        step_set = set(step_parts)
+        for node_id, part_data in part_catalog.items():
+            color = part_data.get("color", "").lower()
+            shape = part_data.get("shape", "").lower()
 
-        if not detected_set or not step_set:
-            return 0.0, "no_parts"
+            if color and shape:
+                signature = f"{color}:{shape}"
+                signature_map[signature] = node_id
 
-        intersection = detected_set & step_set
-        union = detected_set | step_set
+        logger.debug(f"Built signature map with {len(signature_map)} entries")
+        return signature_map
 
-        part_score = len(intersection) / len(union) if union else 0.0
+    def _convert_parts_to_node_ids(
+        self,
+        detected_parts: List[Dict[str, Any]],
+        signature_map: Dict[str, str]
+    ) -> Set[str]:
+        """
+        Convert detected parts to node IDs using signature matching.
 
-        # 2. Subassembly matching bonus
-        subassembly_bonus = 0.0
-        if detected_subassemblies and step_assembly_desc:
-            # Check if any detected subassembly matches step description
-            for subasm in detected_subassemblies:
-                subasm_desc = subasm.get("description", "").lower()
-                step_desc_lower = step_assembly_desc.lower()
+        Args:
+            detected_parts: List of detected parts with color, shape, etc.
+            signature_map: Mapping from "color:shape" to node_id
 
-                # Fuzzy match: check for key words
-                subasm_words = set(subasm_desc.split())
-                step_words = set(step_desc_lower.split())
-                word_overlap = subasm_words & step_words
+        Returns:
+            Set of node IDs matching the detected parts
+        """
+        node_ids = set()
 
-                if len(word_overlap) >= 2:  # At least 2 words match
-                    subassembly_bonus = 0.2
-                    break
+        for part in detected_parts:
+            color = part.get("color", "").lower()
+            shape = part.get("shape", "").lower()
 
-        # 3. Part count similarity
-        count_similarity = 1.0 - abs(len(detected_parts) - len(step_parts)) / max(len(detected_parts), len(step_parts))
-        count_score = count_similarity * 0.1  # Small weight
+            if color and shape:
+                signature = f"{color}:{shape}"
+                if signature in signature_map:
+                    node_id = signature_map[signature]
+                    # Add multiple times based on quantity
+                    quantity = part.get("quantity", 1)
+                    for _ in range(quantity):
+                        node_ids.add(node_id)
+                else:
+                    logger.debug(f"No match for signature: {signature}")
 
-        # Combined score
-        final_score = (part_score * 0.7) + subassembly_bonus + count_score
-        final_score = min(final_score, 1.0)
+        return node_ids
 
-        # Generate reason
-        matched_parts = len(intersection)
-        total_detected = len(detected_set)
-        total_step = len(step_set)
+    def _score_step_states(
+        self,
+        detected_node_ids: Set[str],
+        step_states: List[Dict[str, Any]],
+        nodes: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """
+        Score each step_state against detected parts using F1 score.
 
-        reason = f"{matched_parts}/{total_detected} detected parts matched ({matched_parts}/{total_step} step parts)"
+        Args:
+            detected_node_ids: Set of detected part node IDs
+            step_states: List of step states with existing_nodes
+            nodes: All nodes from graph (to filter parts vs subassemblies)
 
-        if subassembly_bonus > 0:
-            reason += ", subassembly matched"
+        Returns:
+            List of match results
+        """
+        matches = []
 
-        return final_score, reason
+        # Build set of part node IDs for quick filtering
+        part_node_ids = {n["node_id"] for n in nodes if n["type"] == "part"}
 
-    def _extract_step_parts(self, step_state: Dict[str, Any]) -> List[str]:
-        """Extract normalized parts from step state."""
-        parts = []
+        # Score each step state (start from end for better matches first)
+        for step_state in reversed(step_states):
+            step_number = step_state.get("step_number")
+            if step_number is None:
+                continue
 
-        # From parts_needed
-        for part in step_state.get("parts_needed", []):
-            desc = part.get("description", "")
-            quantity = part.get("quantity", 1)
+            # Get existing nodes for this step (cumulative)
+            existing_nodes = set(step_state.get("existing_nodes", []))
 
-            # Normalize description
-            canonical = desc.lower().replace(" ", "_")
-            parts.extend([canonical] * quantity)
+            # Filter to only part nodes (exclude subassemblies)
+            step_part_nodes = existing_nodes & part_node_ids
 
-        # Also consider parts_accumulated (total parts so far)
-        for part in step_state.get("parts_accumulated", []):
-            desc = part.get("description", "")
-            quantity = part.get("quantity", 1)
-            canonical = desc.lower().replace(" ", "_")
-            parts.extend([canonical] * quantity)
+            if not step_part_nodes:
+                continue
 
-        return parts
+            # Calculate overlap
+            overlap = detected_node_ids & step_part_nodes
+
+            # Precision: how many detected parts are correct
+            precision = len(overlap) / len(detected_node_ids) if detected_node_ids else 0.0
+
+            # Recall: how many expected parts were detected
+            recall = len(overlap) / len(step_part_nodes) if step_part_nodes else 0.0
+
+            # F1 score (harmonic mean of precision and recall)
+            f1_score = (
+                2 * (precision * recall) / (precision + recall)
+                if (precision + recall) > 0
+                else 0.0
+            )
+
+            # Only include reasonable matches
+            if f1_score > 0.1:
+                reason = (
+                    f"{len(overlap)}/{len(detected_node_ids)} parts matched "
+                    f"({len(overlap)}/{len(step_part_nodes)} expected, F1: {f1_score:.2f})"
+                )
+
+                matches.append({
+                    "step_number": step_number,
+                    "confidence": f1_score,
+                    "match_reason": reason,
+                    "step_state": step_state,
+                    "next_step": step_number + 1,
+                    "precision": precision,
+                    "recall": recall,
+                    "matched_node_ids": list(overlap)  # Node IDs that matched
+                })
+
+        return matches
 
     def _get_next_steps(self, current_step: int, step_states: List[Dict]) -> List[int]:
         """Get step numbers of next sequential steps."""

@@ -306,6 +306,105 @@ class UnifiedVLMClient:
         else:
             return [{"error": "Invalid result format", "raw": str(result)}]
 
+    def analyze_images_json(
+        self,
+        image_paths: List[str],
+        prompt: str,
+        cache_context: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Analyze multiple images with a custom prompt and return JSON response.
+
+        Used for analyzing user assembly photos with structured output.
+
+        Args:
+            image_paths: List of paths to images (local files or URLs)
+            prompt: Analysis prompt
+            cache_context: Optional cache context string
+
+        Returns:
+            Parsed JSON dictionary from VLM response
+        """
+        # Check cache
+        cache_key = f"{self.model}:analyze:{','.join(image_paths)}:{cache_context}" if cache_context else f"{self.model}:analyze:{','.join(image_paths)}"
+        cached = self.cache.get(self.model, cache_key, image_paths)
+        if cached:
+            logger.debug(f"Cache hit for analysis: {self.model}")
+            return cached
+
+        # Prepare message with images
+        import base64
+        from pathlib import Path
+
+        content = [{"type": "text", "text": prompt}]
+
+        # Add each image
+        for img_path in image_paths:
+            # Handle URLs
+            if img_path.startswith('http://') or img_path.startswith('https://'):
+                content.append({
+                    "type": "image_url",
+                    "image_url": {"url": img_path}
+                })
+                continue
+
+            # Handle local files
+            path = Path(img_path)
+            if not path.exists():
+                logger.error(f"Image not found: {img_path}")
+                continue
+
+            # Encode image
+            with open(img_path, 'rb') as img_file:
+                image_data = base64.b64encode(img_file.read()).decode('utf-8')
+
+            # Determine mime type
+            suffix = path.suffix.lower()
+            mime_type = {
+                '.png': 'image/png',
+                '.jpg': 'image/jpeg',
+                '.jpeg': 'image/jpeg',
+                '.webp': 'image/webp',
+                '.gif': 'image/gif'
+            }.get(suffix, 'image/png')
+
+            content.append({
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:{mime_type};base64,{image_data}"
+                }
+            })
+
+        messages = [{"role": "user", "content": content}]
+
+        # Call LiteLLM
+        try:
+            response = litellm.completion(
+                model=self.model,
+                messages=messages,
+                temperature=0.7,
+                max_tokens=60000,
+                response_format={"type": "json_object"}  # Request JSON mode
+            )
+
+            # Handle case where content is None
+            response_text = response.choices[0].message.content
+            if response_text is None:
+                logger.warning(f"LiteLLM returned None content for image analysis")
+                return {"error": "LiteLLM returned None content"}
+
+            # Parse JSON response
+            result = self._parse_response(response_text, use_json_mode=True)
+
+            # Cache result
+            self.cache.set(self.model, cache_key, result, image_paths)
+
+            return result
+
+        except Exception as e:
+            logger.error(f"LiteLLM image analysis failed: {e}")
+            return {"error": str(e)}
+
     def generate_text_description(
         self,
         image_path: str,

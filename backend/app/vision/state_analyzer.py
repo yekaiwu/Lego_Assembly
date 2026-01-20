@@ -22,15 +22,16 @@ class StateAnalyzer:
     """Analyzes user's physical assembly state from photos."""
 
     def __init__(self, vlm_client=None):
-        """Initialize with Phase 1 VLM client."""
+        """Initialize with VLM client from backend settings."""
         if vlm_client is None:
-            # Use INGESTION_VLM from Phase 1 config (for analyzing user photos)
-            from src.vision_processing.vlm_step_extractor import VLMStepExtractor
-            config = get_phase1_config()
-            extractor = VLMStepExtractor()
-            ingestion_vlm = config.models.ingestion_vlm
-            self.vlm_client = extractor._get_client(ingestion_vlm)
-            logger.info(f"StateAnalyzer initialized with INGESTION_VLM: {ingestion_vlm}")
+            # Use STATE_ANALYSIS_VLM from backend settings (configurable via .env)
+            from ..config import get_settings
+            settings = get_settings()
+            state_analysis_vlm = settings.state_analysis_vlm
+
+            # Initialize VLM client directly
+            self.vlm_client = UnifiedVLMClient(model_name=state_analysis_vlm)
+            logger.info(f"StateAnalyzer initialized with STATE_ANALYSIS_VLM: {state_analysis_vlm}")
         else:
             self.vlm_client = vlm_client
             logger.info("StateAnalyzer initialized with provided VLM client")
@@ -66,20 +67,14 @@ class StateAnalyzer:
             
             # Build analysis prompt for user assembly photos
             prompt = self._build_analysis_prompt(manual_id, context)
-            
-            # Call VLM with custom prompt for user photo analysis
-            content = [{"text": prompt}]
-            for img_path in image_paths:
-                if img_path.startswith('http://') or img_path.startswith('https://'):
-                    content.append({"image": img_path})
-                else:
-                    # Encode local file as base64
-                    image_data = self.vlm_client._encode_image_to_base64(img_path)
-                    content.append({"image": image_data})
-            
-            # Call API with retry logic
-            response = self.vlm_client._call_api_with_retry(content, use_json_mode=True)
-            result = self.vlm_client._parse_response(response, use_json_mode=True)
+
+            # Call VLM with custom prompt for user photo analysis using the new method
+            cache_context = f"{manual_id}_state_analysis"
+            result = self.vlm_client.analyze_images_json(
+                image_paths=image_paths,
+                prompt=prompt,
+                cache_context=cache_context
+            )
             
             # Structure the response
             structured_result = self._structure_analysis_result(result)

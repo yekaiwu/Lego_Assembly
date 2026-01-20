@@ -352,39 +352,35 @@ export default function GraphVisualization() {
           <div className="space-y-3">
             <div>
               <p className="text-sm text-gray-500">Node ID</p>
-              <p className="font-mono text-sm">{selectedNode.node_id}</p>
+              <p className="font-mono text-sm text-gray-900">{selectedNode.node_id}</p>
             </div>
             <div>
               <p className="text-sm text-gray-500">Type</p>
-              <p className="capitalize">{selectedNode.type}</p>
+              <p className="capitalize text-gray-900">{selectedNode.type}</p>
             </div>
             <div>
               <p className="text-sm text-gray-500">Name</p>
-              <p>{selectedNode.name}</p>
+              <p className="text-gray-900 font-medium">{selectedNode.name}</p>
             </div>
             <div>
               <p className="text-sm text-gray-500">Description</p>
-              <p>{selectedNode.description}</p>
+              <p className="text-gray-900">{selectedNode.description}</p>
             </div>
             {selectedNode.color && (
               <div>
                 <p className="text-sm text-gray-500">Color</p>
-                <p className="capitalize">{selectedNode.color}</p>
+                <p className="capitalize text-gray-900">{selectedNode.color}</p>
               </div>
             )}
             {selectedNode.shape && (
               <div>
                 <p className="text-sm text-gray-500">Shape</p>
-                <p>{selectedNode.shape}</p>
+                <p className="text-gray-900">{selectedNode.shape}</p>
               </div>
             )}
             <div>
               <p className="text-sm text-gray-500">Step Created</p>
-              <p>Step {selectedNode.step_created}</p>
-            </div>
-            <div>
-              <p className="text-sm text-gray-500">Layer</p>
-              <p>Layer {selectedNode.layer}</p>
+              <p className="text-gray-900">Step {selectedNode.step_created}</p>
             </div>
             {selectedNode.parents.length > 0 && (
               <div>
@@ -393,7 +389,7 @@ export default function GraphVisualization() {
                   {selectedNode.parents.map((parent) => (
                     <span
                       key={parent}
-                      className="text-xs bg-gray-100 px-2 py-1 rounded"
+                      className="text-xs bg-gray-100 text-gray-900 px-2 py-1 rounded"
                     >
                       {parent}
                     </span>
@@ -410,7 +406,7 @@ export default function GraphVisualization() {
                   {selectedNode.children.map((child) => (
                     <span
                       key={child}
-                      className="text-xs bg-gray-100 px-2 py-1 rounded"
+                      className="text-xs bg-gray-100 text-gray-900 px-2 py-1 rounded"
                     >
                       {child}
                     </span>

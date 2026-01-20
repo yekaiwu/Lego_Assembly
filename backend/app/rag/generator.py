@@ -35,6 +35,7 @@ class GeneratorService:
         manual_id: str,
         include_graph_context: bool = True,
         current_step: Optional[int] = None,
+        next_step: Optional[int] = None,
         image_analysis: Optional[Dict[str, Any]] = None
     ) -> str:
         """
@@ -45,7 +46,8 @@ class GeneratorService:
             contexts: Retrieved context chunks
             manual_id: Manual identifier
             include_graph_context: Whether to enrich with graph context
-            current_step: Optional current step number for state-aware responses
+            current_step: Optional current step number (step completed/matched)
+            next_step: Optional next step number (step to do next)
             image_analysis: Optional image analysis results for context
 
         Returns:
@@ -62,6 +64,7 @@ class GeneratorService:
                 query=query,
                 contexts=contexts,
                 current_step=current_step,
+                next_step=next_step,
                 image_analysis=image_analysis
             )
 
@@ -152,6 +155,7 @@ Please provide a helpful, accurate answer based on all the context above."""
         query: str,
         contexts: List[Dict[str, Any]],
         current_step: Optional[int] = None,
+        next_step: Optional[int] = None,
         image_analysis: Optional[Dict[str, Any]] = None
     ) -> str:
         """
@@ -160,7 +164,7 @@ Please provide a helpful, accurate answer based on all the context above."""
         Includes:
         - Model metadata (model name, total steps, parts, subassemblies)
         - Graph overview (key components, structure)
-        - Current assembly state (progress, completion)
+        - Current assembly state (progress, completion, next step)
         - Detected state from images (visible parts)
         - Retrieved step contexts
 
@@ -168,7 +172,8 @@ Please provide a helpful, accurate answer based on all the context above."""
             manual_id: Manual identifier
             query: User query
             contexts: Retrieved context chunks
-            current_step: Optional current step number
+            current_step: Optional current step number (step completed/matched)
+            next_step: Optional next step number (step to do next)
             image_analysis: Optional image analysis results
 
         Returns:
@@ -208,7 +213,10 @@ Please provide a helpful, accurate answer based on all the context above."""
         # 2. CURRENT ASSEMBLY STATE (if available)
         if current_step:
             state_info_parts = ["## Current Assembly State"]
-            state_info_parts.append(f"- Current Step: {current_step}")
+            state_info_parts.append(f"- Completed Step: {current_step}")
+
+            if next_step:
+                state_info_parts.append(f"- Next Step: {next_step}")
 
             # Get step state from graph
             try:
