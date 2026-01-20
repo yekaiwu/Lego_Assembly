@@ -150,37 +150,48 @@ class VisualMatcher:
                 return None
 
             # Parse Roboflow API response
-            # Response format: {"segmentations": [{"mask": [...], "bounding_box": {...}, "confidence": 0.X}]}
-            segmentations = api_response.get("segmentations", [])
-            if not segmentations:
-                logger.warning(f"No segments found in {image_path}")
+            # Response format: {"prompt_results": [{"predictions": [{"masks": [...], "confidence": 0.X}]}]}
+            prompt_results = api_response.get("prompt_results", [])
+            if not prompt_results:
+                logger.warning(f"No prompt_results in API response for {image_path}")
                 return None
 
-            # Get best result (highest confidence)
-            best_seg = max(segmentations, key=lambda s: s.get("confidence", 0.0))
-            confidence = best_seg.get("confidence", 0.0)
+            result = prompt_results[0]
+            predictions = result.get("predictions", [])
 
-            # Extract bounding box
-            bbox_dict = best_seg.get("bounding_box", {})
-            if not bbox_dict:
-                logger.error("No bounding box returned from Roboflow SAM3")
+            if not predictions:
+                logger.warning(f"No predictions in API response for {image_path}")
                 return None
 
-            x1 = int(bbox_dict.get("x", 0))
-            y1 = int(bbox_dict.get("y", 0))
-            x2 = int(bbox_dict.get("x", 0) + bbox_dict.get("width", 0))
-            y2 = int(bbox_dict.get("y", 0) + bbox_dict.get("height", 0))
+            # Get first (highest confidence) prediction
+            prediction = predictions[0]
+            confidence = prediction.get("confidence", 0.0)
 
-            # Load image and create mask from RLE
+            # Extract masks (polygon format)
+            if "masks" not in prediction or not prediction["masks"]:
+                logger.warning(f"No masks in prediction for {image_path}")
+                return None
+
+            polygon_points = prediction["masks"][0]
+
+            # Load image
             pil_image = PILImage.open(image_path).convert("RGB")
             image_cv = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
             h, w = image_cv.shape[:2]
 
-            # Decode mask from RLE or polygon
-            mask = self._decode_mask(best_seg, h, w)
+            # Convert polygon to mask
+            mask = self._polygon_to_mask(polygon_points, (h, w))
             if mask is None:
-                logger.error("Failed to decode mask from Roboflow response")
+                logger.error("Failed to convert polygon to mask")
                 return None
+
+            # Extract bounding box from mask
+            bbox = self._mask_to_bbox(mask)
+            if bbox is None:
+                logger.error("Failed to extract bounding box from mask")
+                return None
+
+            x1, y1, x2, y2 = bbox
 
             # Crop to bounding box with padding
             padding = 20
@@ -213,55 +224,70 @@ class VisualMatcher:
             logger.debug(traceback.format_exc())
             return None
 
-    def _decode_mask(self, segmentation: Dict[str, Any], height: int, width: int) -> Optional[np.ndarray]:
+    def _polygon_to_mask(self, polygon_points: List, image_shape: Tuple[int, int]) -> Optional[np.ndarray]:
         """
-        Decode mask from Roboflow API response (handles RLE or polygon formats).
+        Convert polygon points to binary mask.
 
         Args:
-            segmentation: Segmentation dict from Roboflow API
-            height: Image height
-            width: Image width
+            polygon_points: List of [x, y] coordinate pairs
+            image_shape: (height, width) of the target image
 
         Returns:
-            Binary mask as numpy array or None if failed
+            Binary mask as numpy array (uint8) or None if failed
         """
         try:
-            # Check if mask is in RLE format
-            if "mask" in segmentation:
-                mask_data = segmentation["mask"]
-                if isinstance(mask_data, dict) and "counts" in mask_data:
-                    # RLE format - decode using pycocotools if available
-                    try:
-                        from pycocotools import mask as mask_utils
-                        rle = mask_data
-                        rle["size"] = [height, width]
-                        mask = mask_utils.decode(rle)
-                        return mask.astype(np.float32)
-                    except ImportError:
-                        logger.warning("pycocotools not available, cannot decode RLE mask")
-                        return None
-                elif isinstance(mask_data, list):
-                    # Polygon format - convert to mask
-                    mask = np.zeros((height, width), dtype=np.uint8)
-                    points = np.array(mask_data).reshape(-1, 2).astype(np.int32)
-                    cv2.fillPoly(mask, [points], 1)
-                    return mask.astype(np.float32)
+            height, width = image_shape
+            mask = np.zeros((height, width), dtype=np.uint8)
 
-            # Fallback: create mask from bounding box
-            bbox = segmentation.get("bounding_box", {})
-            if bbox:
-                mask = np.zeros((height, width), dtype=np.float32)
-                x = int(bbox.get("x", 0))
-                y = int(bbox.get("y", 0))
-                w = int(bbox.get("width", 0))
-                h = int(bbox.get("height", 0))
-                mask[y:y+h, x:x+w] = 1.0
-                return mask
+            # Convert polygon to numpy array
+            if not polygon_points:
+                return None
 
-            return None
+            points = np.array(polygon_points, dtype=np.int32)
+
+            # Ensure points are in the correct shape
+            if len(points.shape) == 2 and points.shape[1] == 2:
+                # Points are already in [[x, y], [x, y], ...] format
+                pass
+            else:
+                # Try to reshape
+                points = points.reshape(-1, 2)
+
+            # Fill polygon
+            cv2.fillPoly(mask, [points], 1)
+
+            # Convert to float32 for consistency with OpenCV operations
+            return mask.astype(np.float32)
 
         except Exception as e:
-            logger.error(f"Error decoding mask: {e}")
+            logger.error(f"Error converting polygon to mask: {e}")
+            return None
+
+    def _mask_to_bbox(self, mask: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
+        """
+        Extract bounding box from binary mask.
+
+        Args:
+            mask: Binary mask (numpy array)
+
+        Returns:
+            Bounding box as (x1, y1, x2, y2) or None if mask is empty
+        """
+        try:
+            # Find non-zero pixels
+            rows = np.any(mask, axis=1)
+            cols = np.any(mask, axis=0)
+
+            if not rows.any() or not cols.any():
+                return None
+
+            y1, y2 = np.where(rows)[0][[0, -1]]
+            x1, x2 = np.where(cols)[0][[0, -1]]
+
+            return (int(x1), int(y1), int(x2), int(y2))
+
+        except Exception as e:
+            logger.error(f"Error extracting bbox from mask: {e}")
             return None
 
     def extract_orb_features(
