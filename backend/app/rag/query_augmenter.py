@@ -260,6 +260,72 @@ Rewritten Query:"""
             logger.error(f"Error augmenting with history: {e}")
             return user_query
 
+    def augment_with_graph_context(
+        self,
+        user_query: str,
+        manual_id: str,
+        current_step: Optional[int] = None,
+        graph_manager = None
+    ) -> str:
+        """
+        Augment query with graph-based context.
+
+        Example:
+        "What parts?" + current_step=5 + graph context
+        → "What parts are needed for step 6 after completing the red base assembly?"
+
+        Args:
+            user_query: Original user query
+            manual_id: Manual identifier
+            current_step: Current step number if known
+            graph_manager: GraphManager instance (optional)
+
+        Returns:
+            Augmented query with graph context
+        """
+        if not graph_manager or not current_step:
+            return user_query
+
+        try:
+            # Get step context from graph
+            step_context = graph_manager.get_step_context(
+                manual_id,
+                current_step,
+                include_history=True
+            )
+
+            # Build context string
+            context_parts = []
+
+            # Add current step info
+            if "step_state" in step_context:
+                state = step_context["step_state"]
+                assembly_desc = state.get("assembly_description", "")
+                if assembly_desc:
+                    context_parts.append(f"Current assembly: {assembly_desc}")
+
+            # Add history summary
+            if "history" in step_context and len(step_context["history"]) > 0:
+                recent_steps = step_context["history"][-3:]  # Last 3 steps
+                history_desc = ", ".join([
+                    s.get("assembly_description", f"step {s.get('step_number')}")
+                    for s in recent_steps if "assembly_description" in s
+                ])
+                if history_desc:
+                    context_parts.append(f"Previous steps: {history_desc}")
+
+            # Build augmented query
+            if context_parts:
+                context_str = "; ".join(context_parts)
+                augmented = f"{user_query} (Context: {context_str})"
+                logger.info(f"Graph-augmented query: {augmented[:100]}...")
+                return augmented
+
+        except Exception as e:
+            logger.error(f"Graph augmentation error: {e}")
+
+        return user_query
+
 
 # Singleton instance
 _query_augmenter_instance = None

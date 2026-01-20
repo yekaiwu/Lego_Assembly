@@ -195,6 +195,88 @@ class UnifiedLLMClient:
             logger.error(f"Error in async embeddings with {embedding_model}: {e}")
             raise
 
+    def generate_with_vision(
+        self,
+        prompt: str,
+        image_paths: List[str],
+        temperature: float = 0.7,
+        max_tokens: int = 4000,
+        response_format: Optional[str] = None,
+        **kwargs
+    ) -> str:
+        """
+        Generate text with vision input (multimodal).
+
+        Args:
+            prompt: Text prompt
+            image_paths: List of paths to images
+            temperature: Sampling temperature
+            max_tokens: Maximum tokens to generate
+            response_format: Optional format ("json" for JSON mode)
+            **kwargs: Additional parameters
+
+        Returns:
+            Generated text response
+        """
+        import base64
+        from pathlib import Path
+
+        # Build message content with text + images
+        content = [{"type": "text", "text": prompt}]
+
+        # Add images
+        for img_path in image_paths:
+            path = Path(img_path)
+            if not path.exists():
+                logger.warning(f"Image not found: {img_path}")
+                continue
+
+            # Read and encode image
+            with open(img_path, 'rb') as img_file:
+                image_data = base64.b64encode(img_file.read()).decode('utf-8')
+
+            # Determine mime type
+            suffix = path.suffix.lower()
+            mime_type = {
+                '.png': 'image/png',
+                '.jpg': 'image/jpeg',
+                '.jpeg': 'image/jpeg',
+                '.webp': 'image/webp',
+                '.gif': 'image/gif'
+            }.get(suffix, 'image/png')
+
+            content.append({
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:{mime_type};base64,{image_data}"
+                }
+            })
+
+        messages = [{"role": "user", "content": content}]
+
+        try:
+            # Add response format if specified
+            extra_params = {}
+            if response_format == "json":
+                extra_params["response_format"] = {"type": "json_object"}
+
+            response = litellm.completion(
+                model=self.model,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                **extra_params,
+                **kwargs
+            )
+
+            result = response.choices[0].message.content
+            logger.debug(f"Vision generation: {len(result)} chars with {self.model}")
+            return result
+
+        except Exception as e:
+            logger.error(f"Error in vision generation with {self.model}: {e}")
+            raise
+
 
 def get_llm_client(
     model: str,

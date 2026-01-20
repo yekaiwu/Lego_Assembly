@@ -145,8 +145,9 @@ class SubassemblyDetector:
                 parent_subassembly = previous_subassembly
                 logger.debug(f"Step {step_number}: Default sequential link to {previous_subassembly}")
 
-        # Extract SAM3 assembled result data if available
-        assembled_result = step.get("assembled_result", {})
+        # Extract SAM3 assembled product data if available
+        # Note: RoboflowSAM3Segmenter writes to "assembled_product" field
+        assembled_product = step.get("assembled_product", {})
 
         # Create subassembly definition
         subassembly = {
@@ -163,10 +164,10 @@ class SubassemblyDetector:
                 "required_connections": self._extract_connections(actions),
                 "spatial_signature": self._extract_spatial_signature(step)
             },
-            # SAM3 segmentation data from assembled result (if available)
-            "cropped_image_path": assembled_result.get("cropped_image_path") if assembled_result else None,
-            "mask_path": assembled_result.get("mask_path") if assembled_result else None,
-            "bounding_box": assembled_result.get("bounding_box") if assembled_result else None
+            # SAM3 segmentation data from assembled product (if available)
+            "cropped_image_path": assembled_product.get("cropped_image_path") if assembled_product else None,
+            "mask_path": assembled_product.get("mask_path") if assembled_product else None,
+            "bounding_box": assembled_product.get("bounding_box") if assembled_product else None
         }
 
         return subassembly
@@ -550,10 +551,13 @@ class GraphBuilder:
         
         # Build relationships
         self._build_relationships(nodes, subassemblies, part_catalog, extracted_steps, edges)
-        
+
+        # Compute constituent parts for each subassembly (for state matching)
+        self._compute_constituent_parts(nodes)
+
         # Assign layers
         self._assign_layers(nodes)
-        
+
         return nodes, edges
     
     def _build_relationships(
@@ -649,26 +653,80 @@ class GraphBuilder:
     def _assign_layers(self, nodes: List[Dict[str, Any]]):
         """Assign layer numbers (depth from root)."""
         node_map = {node["node_id"]: node for node in nodes}
-        
+
         # BFS from root to assign layers
         queue = [(n["node_id"], 0) for n in nodes if n["type"] == "model"]
         visited = set()
-        
+
         while queue:
             node_id, layer = queue.pop(0)
-            
+
             if node_id in visited:
                 continue
             visited.add(node_id)
-            
+
             node = node_map[node_id]
             node["layer"] = layer
-            
+
             # Add children to queue
             for child_id in node.get("children", []):
                 if child_id not in visited:
                     queue.append((child_id, layer + 1))
-    
+
+    def _compute_constituent_parts(self, nodes: List[Dict[str, Any]]):
+        """
+        Compute constituent_parts for each subassembly node.
+
+        constituent_parts contains all parts in the cumulative assembled state
+        represented by that subassembly (all parts used from step 1 to this step).
+
+        This is used for state matching: when a user shows their assembly,
+        we match the detected parts against constituent_parts of each subassembly
+        to determine which step they've completed.
+        """
+        node_map = {node["node_id"]: node for node in nodes}
+
+        def get_all_parts_recursive(node_id: str, visited: Set[str] = None) -> List[Dict[str, Any]]:
+            """Recursively collect all parts under a node."""
+            if visited is None:
+                visited = set()
+
+            if node_id in visited:
+                return []
+            visited.add(node_id)
+
+            node = node_map.get(node_id)
+            if not node:
+                return []
+
+            parts = []
+
+            # If this is a part node, add it
+            if node["type"] == "part":
+                parts.append({
+                    "part_id": node_id,
+                    "name": node["name"],
+                    "description": node.get("description", ""),
+                    "color": node.get("color", ""),
+                    "shape": node.get("shape", "")
+                })
+
+            # Recursively get parts from all children
+            for child_id in node.get("children", []):
+                parts.extend(get_all_parts_recursive(child_id, visited))
+
+            return parts
+
+        # Compute constituent_parts for each subassembly
+        for node in nodes:
+            if node["type"] == "subassembly":
+                # Get all parts under this subassembly (includes the whole subtree)
+                constituent_parts = get_all_parts_recursive(node["node_id"])
+                node["constituent_parts"] = constituent_parts
+
+                logger.debug(f"Subassembly {node['node_id']} (step {node['step_created']}): "
+                           f"{len(constituent_parts)} constituent parts")
+
     def _calculate_metadata(
         self,
         nodes: List[Dict[str, Any]],

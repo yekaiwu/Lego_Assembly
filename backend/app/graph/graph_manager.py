@@ -549,6 +549,104 @@ class GraphManager:
             }
         }
 
+    def get_step_by_state(
+        self,
+        manual_id: str,
+        detected_parts: list,
+        confidence_threshold: float = 0.5
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Find step that matches detected parts.
+        Uses StateMatcher internally.
+
+        Args:
+            manual_id: Manual identifier
+            detected_parts: List of detected part descriptions
+            confidence_threshold: Minimum confidence for match
+
+        Returns:
+            Matching step info or None
+        """
+        from .state_matcher import get_state_matcher
+
+        matcher = get_state_matcher(self)
+        matches = matcher.match_state(
+            detected_state={"detected_parts": detected_parts},
+            manual_id=manual_id,
+            top_k=1
+        )
+
+        if matches and matches[0]["confidence"] >= confidence_threshold:
+            return matches[0]
+        return None
+
+    def get_next_step_details(
+        self,
+        manual_id: str,
+        current_step: int
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Get detailed information about next step.
+
+        Args:
+            manual_id: Manual identifier
+            current_step: Current step number
+
+        Returns:
+            Next step details or None if no next step
+        """
+        next_step_num = current_step + 1
+        next_step_state = self.get_step_state(manual_id, next_step_num)
+
+        if not next_step_state:
+            return None
+
+        return {
+            "step_number": next_step_num,
+            "step_state": next_step_state
+        }
+
+    def get_step_context(
+        self,
+        manual_id: str,
+        step_number: int,
+        include_history: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Get comprehensive context for a step.
+        Includes predecessor steps if include_history=True.
+
+        Args:
+            manual_id: Manual identifier
+            step_number: Step number
+            include_history: Whether to include previous steps
+
+        Returns:
+            Step context dictionary
+        """
+        step_state = self.get_step_state(manual_id, step_number)
+
+        if not step_state:
+            return {}
+
+        context = {
+            "step_number": step_number,
+            "step_state": step_state,
+        }
+
+        if include_history:
+            # Get all previous step states
+            graph = self.load_graph(manual_id)
+            if graph:
+                all_step_states = graph.get("step_states", [])
+                predecessor_states = [
+                    s for s in all_step_states
+                    if s.get("step_number", 0) < step_number
+                ]
+                context["history"] = predecessor_states
+
+        return context
+
 
 # Singleton instance
 _graph_manager_instance = None

@@ -459,7 +459,7 @@ class SAM3Segmenter:
         )
 
         if assembly_seg:
-            extracted_step["assembled_result"] = {
+            extracted_step["assembled_product"] = {
                 "bounding_box": assembly_seg.bounding_box,
                 "cropped_image_path": assembly_seg.cropped_image_path,
                 "mask_path": assembly_seg.mask_path,

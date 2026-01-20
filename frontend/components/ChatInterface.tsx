@@ -2,9 +2,9 @@
 
 import { useState, useRef, useEffect } from 'react'
 import { useMutation } from '@tanstack/react-query'
-import { api } from '@/lib/api/client'
+import { api, ImageAnalysisResult } from '@/lib/api/client'
 import { useManualStore } from '@/lib/store/manualStore'
-import { Send, Loader2, Bot, User, HelpCircle, Image as ImageIcon, X } from 'lucide-react'
+import { Send, Loader2, Bot, User, HelpCircle, Image as ImageIcon, X, CheckCircle2, Package } from 'lucide-react'
 
 interface Message {
   id: string
@@ -12,6 +12,7 @@ interface Message {
   content: string
   timestamp: Date
   images?: string[] // Preview URLs for uploaded images
+  imageAnalysis?: ImageAnalysisResult // VLM analysis results
 }
 
 export default function ChatInterface() {
@@ -34,6 +35,16 @@ export default function ChatInterface() {
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }
+
+  // Convert File to base64 data URL for permanent storage in messages
+  const fileToBase64 = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(reader.result as string)
+      reader.onerror = reject
+      reader.readAsDataURL(file)
+    })
   }
 
   useEffect(() => {
@@ -128,6 +139,7 @@ export default function ChatInterface() {
           role: 'assistant',
           content: data.answer,
           timestamp: new Date(),
+          imageAnalysis: data.image_analysis,  // Include VLM analysis if present
         },
       ])
     },
@@ -224,13 +236,25 @@ export default function ChatInterface() {
       }
     }
 
-    // Add user message with image previews
+    // Convert images to base64 for permanent storage in messages
+    let messageImages: string[] | undefined = undefined
+    if (uploadedImages.length > 0) {
+      try {
+        messageImages = await Promise.all(uploadedImages.map(file => fileToBase64(file)))
+      } catch (error) {
+        console.error('Failed to convert images to base64:', error)
+        // Fallback to blob URLs if conversion fails
+        messageImages = imagePreviews
+      }
+    }
+
+    // Add user message with permanent base64 image URLs
     const userMessage: Message = {
       id: Date.now().toString(),
       role: 'user',
       content: input,
       timestamp: new Date(),
-      images: uploadedImages.length > 0 ? imagePreviews : undefined,
+      images: messageImages,
     }
     setMessages((prev) => [...prev, userMessage])
     setInput('')
@@ -349,6 +373,37 @@ export default function ChatInterface() {
                     {message.content}
                   </p>
                 </div>
+
+                {/* Image Analysis Results (only for assistant messages) */}
+                {message.role === 'assistant' && message.imageAnalysis && message.imageAnalysis.detected_parts.length > 0 && (
+                  <div className="mt-3 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                    <div className="flex items-center gap-2 mb-2">
+                      <Package className="w-4 h-4 text-blue-600" />
+                      <h4 className="text-sm font-semibold text-blue-800">Detected Parts</h4>
+                      <span className="text-xs text-blue-600 bg-blue-100 px-2 py-0.5 rounded">
+                        {message.imageAnalysis.detected_parts.length} parts found
+                      </span>
+                    </div>
+                    <div className="space-y-1">
+                      {message.imageAnalysis.detected_parts.map((part, idx) => (
+                        <div key={idx} className="flex items-start gap-2 text-xs">
+                          <CheckCircle2 className="w-3 h-3 text-green-600 mt-0.5 flex-shrink-0" />
+                          <span className="text-gray-700">
+                            <span className="font-medium capitalize">{part.color}</span> {part.shape || part.description}
+                            {part.quantity > 1 && ` (×${part.quantity})`}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                    {message.imageAnalysis.matched_node_ids.length > 0 && (
+                      <div className="mt-2 pt-2 border-t border-blue-200">
+                        <p className="text-xs text-blue-700">
+                          ✓ Matched {message.imageAnalysis.matched_node_ids.length} part{message.imageAnalysis.matched_node_ids.length !== 1 ? 's' : ''} to assembly graph
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
               <div className="text-xs text-gray-400 mt-1">
                 {message.timestamp.toLocaleTimeString([], {

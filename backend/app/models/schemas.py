@@ -116,6 +116,27 @@ class RetrievalResult(BaseModel):
     image_path: Optional[str] = None
 
 
+# ==================== Vision/State Analysis (Forward declarations) ====================
+
+class DetectedPart(BaseModel):
+    """Part detected in user's assembly photos."""
+    description: str
+    color: str
+    shape: Optional[str] = None
+    part_id: Optional[str] = None
+    quantity: int = 1
+    location: Optional[str] = None
+    confidence: float = 0.5
+
+
+class ImageAnalysisResult(BaseModel):
+    """VLM analysis results from user's uploaded images."""
+    detected_parts: List[DetectedPart] = Field(default_factory=list)
+    confidence: float = 0.0
+    matched_node_ids: List[str] = Field(default_factory=list)  # Node IDs that were matched
+    unmatched_parts: List[DetectedPart] = Field(default_factory=list)  # Parts detected but not in catalog
+
+
 class QueryResponse(BaseModel):
     """Response to a query."""
     answer: str
@@ -124,6 +145,7 @@ class QueryResponse(BaseModel):
     next_step: Optional[int] = None
     guidance: Optional[str] = None
     parts_needed: Optional[List[PartInfo]] = None
+    image_analysis: Optional[ImageAnalysisResult] = None  # VLM analysis if images uploaded
 
 
 # ==================== Health & Status ====================
@@ -137,18 +159,7 @@ class HealthResponse(BaseModel):
     total_chunks: int
 
 
-# ==================== Vision/State Analysis ====================
-
-class DetectedPart(BaseModel):
-    """Part detected in user's assembly photos."""
-    description: str
-    color: str
-    shape: Optional[str] = None
-    part_id: Optional[str] = None
-    quantity: int = 1
-    location: Optional[str] = None
-    confidence: float = 0.5
-
+# ==================== Vision/State Analysis (Additional Classes) ====================
 
 class AssembledStructure(BaseModel):
     """Description of assembled structure or subassembly."""

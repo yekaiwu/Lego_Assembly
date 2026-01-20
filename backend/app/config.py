@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     # Format: "provider/model" or just "model" for OpenAI
     diagram_vlm: str = "gemini/gemini-robotics-er-1.5-preview"  # VLM for diagram descriptions
     embedding_vlm: str = "gemini/gemini-2.5-flash"  # VLM for multimodal embeddings
+    state_analysis_vlm: str = "gemini/gemini-2.5-flash"  # VLM for analyzing user assembly images
 
     # LLM Settings - Using LiteLLM model identifiers
     # Examples:

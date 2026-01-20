@@ -29,6 +29,9 @@ interface GraphNode {
   parents: string[]
   step_created: number
   layer: number
+  image_path?: string
+  mask_path?: string
+  bounding_box?: number[]
 }
 
 interface GraphEdge {
@@ -290,6 +293,9 @@ export default function GraphVisualization() {
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onNodeClick={onNodeClick}
+            nodesDraggable={true}
+            nodesConnectable={false}
+            elementsSelectable={true}
             fitView
             attributionPosition="bottom-left"
           >
@@ -315,42 +321,66 @@ export default function GraphVisualization() {
       {selectedNode && (
         <div className="bg-white rounded-lg shadow p-4">
           <h2 className="text-lg font-semibold mb-4">Node Details</h2>
+
+          {/* Image Section */}
+          {selectedNode.image_path && (
+            <div className="mb-4 pb-4 border-b border-gray-200">
+              <p className="text-sm text-gray-500 mb-2">Image</p>
+              <div className="flex justify-center">
+                <img
+                  src={api.getImageUrl(selectedNode.image_path)}
+                  alt={selectedNode.name}
+                  className="max-w-full h-auto max-h-64 object-contain border-2 border-gray-200 rounded-lg p-2 bg-gray-50"
+                  onError={(e) => {
+                    // Hide image on load error
+                    const img = e.target as HTMLImageElement
+                    img.style.display = 'none'
+                    // Optionally show a fallback message
+                    const parent = img.parentElement
+                    if (parent && !parent.querySelector('.error-message')) {
+                      const errorMsg = document.createElement('p')
+                      errorMsg.className = 'error-message text-sm text-gray-400 text-center'
+                      errorMsg.textContent = 'Image not available'
+                      parent.appendChild(errorMsg)
+                    }
+                  }}
+                />
+              </div>
+            </div>
+          )}
+
           <div className="space-y-3">
             <div>
               <p className="text-sm text-gray-500">Node ID</p>
-              <p className="font-mono text-sm">{selectedNode.node_id}</p>
+              <p className="font-mono text-sm text-gray-900">{selectedNode.node_id}</p>
             </div>
             <div>
               <p className="text-sm text-gray-500">Type</p>
-              <p className="capitalize">{selectedNode.type}</p>
+              <p className="capitalize text-gray-900">{selectedNode.type}</p>
             </div>
             <div>
               <p className="text-sm text-gray-500">Name</p>
-              <p>{selectedNode.name}</p>
+              <p className="text-gray-900 font-medium">{selectedNode.name}</p>
             </div>
             <div>
               <p className="text-sm text-gray-500">Description</p>
-              <p>{selectedNode.description}</p>
+              <p className="text-gray-900">{selectedNode.description}</p>
             </div>
             {selectedNode.color && (
               <div>
                 <p className="text-sm text-gray-500">Color</p>
-                <p className="capitalize">{selectedNode.color}</p>
+                <p className="capitalize text-gray-900">{selectedNode.color}</p>
               </div>
             )}
             {selectedNode.shape && (
               <div>
                 <p className="text-sm text-gray-500">Shape</p>
-                <p>{selectedNode.shape}</p>
+                <p className="text-gray-900">{selectedNode.shape}</p>
               </div>
             )}
             <div>
               <p className="text-sm text-gray-500">Step Created</p>
-              <p>Step {selectedNode.step_created}</p>
-            </div>
-            <div>
-              <p className="text-sm text-gray-500">Layer</p>
-              <p>Layer {selectedNode.layer}</p>
+              <p className="text-gray-900">Step {selectedNode.step_created}</p>
             </div>
             {selectedNode.parents.length > 0 && (
               <div>
@@ -359,7 +389,7 @@ export default function GraphVisualization() {
                   {selectedNode.parents.map((parent) => (
                     <span
                       key={parent}
-                      className="text-xs bg-gray-100 px-2 py-1 rounded"
+                      className="text-xs bg-gray-100 text-gray-900 px-2 py-1 rounded"
                     >
                       {parent}
                     </span>
@@ -376,7 +406,7 @@ export default function GraphVisualization() {
                   {selectedNode.children.map((child) => (
                     <span
                       key={child}
-                      className="text-xs bg-gray-100 px-2 py-1 rounded"
+                      className="text-xs bg-gray-100 text-gray-900 px-2 py-1 rounded"
                     >
                       {child}
                     </span>
