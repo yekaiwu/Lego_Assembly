@@ -33,6 +33,7 @@ dependencies = [
     # LLM Unified Interface
     "litellm>=1.30.0",
     "openai>=1.6.0", # Required by LiteLLM for OpenAI models
+    "google-generativeai>=0.3.0", # For video analysis with Gemini Robotics ER
     # Computer Vision - SAM Integration
     "torch>=2.0.0",
     "torchvision>=0.15.0",
