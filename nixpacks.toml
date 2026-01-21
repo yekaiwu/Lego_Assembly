@@ -1,10 +1,9 @@
 [phases.setup]
-nixPkgs = ["python312", "curl"]
+nixPkgs = ["python312"]
 
 [phases.install]
 cmds = [
-  "curl -LsSf https://astral.sh/uv/install.sh | sh",
-  "export PATH=\"$HOME/.cargo/bin:$PATH\" && cd backend && pip install -r requirements-backend.txt"
+  "cd backend && pip install --no-cache-dir -r requirements-backend.txt"
 ]
 
 [start]
