@@ -58,6 +58,9 @@ output/
 # Exception: package.json files needed for frontend/backend deployment
 !package.json
 !**/package.json
+# Exception: TypeScript config files needed for Next.js
+!tsconfig.json
+!**/tsconfig.json
 *.txt
 # Exception: requirements.txt needed for Railway deployment
 !requirements.txt
