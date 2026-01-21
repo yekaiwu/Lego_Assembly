@@ -111,6 +111,9 @@ reset_chroma.py
 uv.lock
 package-lock.json
 
+# Root requirements.txt (Railway should use backend/requirements-backend.txt instead)
+requirements.txt
+
 # Jupyter notebooks
 *.ipynb
 .ipynb_checkpoints/
