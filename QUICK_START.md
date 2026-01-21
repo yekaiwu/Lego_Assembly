@@ -22,12 +22,15 @@ Get the complete Vision-Enhanced RAG system running in 10 minutes.
 ## 📋 Prerequisites
 
 **Required**:
-- Python 3.12+ with `uv`
+- Python 3.12+ with `uv` package manager
 - Node.js 18+ and npm
 - Poppler (for PDF processing)
-- CUDA-capable GPU (recommended for SAM3) or CPU
-- HuggingFace account (for SAM3 model access)
-- At least one API key: Qwen (recommended), DeepSeek, or Moonshot
+- At least one API key: Gemini (recommended), Qwen, DeepSeek, or Moonshot
+- Roboflow account (optional, for SAM3 segmentation)
+
+**Optional**:
+- CUDA-capable GPU (not required - SAM3 uses cloud API)
+- HuggingFace account (not required - SAM3 uses Roboflow cloud API)
 
 **Install Tools**:
 ```bash
@@ -40,9 +43,11 @@ brew install poppler  # macOS
 ```
 
 **Get API Key** (choose one):
-- **Qwen** (recommended): https://dashscope.console.aliyun.com/
+- **Gemini** (recommended): https://aistudio.google.com/app/apikey
+- **Qwen**: https://dashscope.console.aliyun.com/
 - **DeepSeek**: https://platform.deepseek.com/
 - **Moonshot**: https://platform.moonshot.cn/
+- **Roboflow** (for SAM3): https://app.roboflow.com (Settings → API)
 
 ---
 
@@ -62,44 +67,50 @@ nano .env
 
 **Add to `.env`**:
 ```bash
-# If using Qwen (recommended)
+# Primary VLM API Key (choose one)
+# Gemini (recommended - default)
+GEMINI_API_KEY=your-gemini-api-key-here
+
+# OR Qwen
 DASHSCOPE_API_KEY=sk-your-key-here
-RAG_LLM_PROVIDER=qwen
-RAG_LLM_MODEL=qwen-max
 
-# OR if using DeepSeek
+# OR DeepSeek
 DEEPSEEK_API_KEY=sk-your-key-here
-RAG_LLM_PROVIDER=deepseek
-RAG_LLM_MODEL=deepseek-chat
 
-# OR if using Moonshot
+# OR Moonshot
 MOONSHOT_API_KEY=sk-your-key-here
-RAG_LLM_PROVIDER=moonshot
-RAG_LLM_MODEL=moonshot-v1-32k
 
-# SAM3 - Part Segmentation (NEW!)
-ENABLE_SAM3=true                   # Enable SAM3 segmentation
-SAM3_DEVICE=cuda                   # cuda or cpu
-SAM3_CONFIDENCE_THRESHOLD=0.7      # Minimum confidence (0.0-1.0)
-SAM3_OUTPUT_DIR=./output/segmented_parts
-SAM3_SAVE_MASKS=true               # Save segmentation masks
-SAM3_SAVE_CROPPED_IMAGES=true      # Save cropped part images
+# Optional: Additional API keys for fallback
+OPENAI_API_KEY=sk-your-key-here
+ANTHROPIC_API_KEY=sk-your-key-here
+
+# SAM3 - Part Segmentation (Optional - uses Roboflow cloud API)
+ENABLE_ROBOFLOW_SAM3=true          # Enable SAM3 segmentation
+ROBOFLOW_API_KEY=your-roboflow-key-here
+ROBOFLOW_SAM3_CONFIDENCE_THRESHOLD=0.7
+ROBOFLOW_SAM3_OUTPUT_DIR=./output/segmented_parts
+ROBOFLOW_SAM3_SAVE_MASKS=true
+ROBOFLOW_SAM3_SAVE_CROPPED_IMAGES=true
+
+# Optional: Processing features
+ENABLE_SPATIAL_RELATIONSHIPS=true  # Enable spatial relationship extraction
+CACHE_ENABLED=true                  # Enable VLM response caching
 ```
 
 ### Step 2: Install Dependencies
 
 ```bash
-# Install all dependencies with uv
+# Install all dependencies with uv (recommended)
 uv sync
 
-# Authenticate with HuggingFace for SAM3
-huggingface-cli login
-# Enter your HuggingFace token when prompted
+# OR install with pip
+pip install -e .
 
-# This installs Phase 1 + Backend dependencies + SAM3
+# This installs Phase 1 + Backend dependencies
+# SAM3 uses Roboflow cloud API - no local model download needed!
 ```
 
-**Note**: SAM3 model checkpoint (~2GB) will auto-download on first use.
+**Note**: SAM3 segmentation uses Roboflow's cloud API, so no local model download is required. Just configure your API key in `.env`.
 
 ### Step 3: Process Manual (Complete Workflow)
 
@@ -109,9 +120,10 @@ uv run python main.py https://www.lego.com/cdn/product-assets/product.bi.core.pd
 
 # ⏱️ Takes ~2-5 minutes (depends on manual size)
 # ✓ Step 1/7: Extract pages from PDF
-# ✓ Step 2/7: Analyze document & filter pages (Phase 0) → User confirmation
+# ✓ Step 2/7: Collect user metadata & filter pages (Phase 0) → User confirmation
 # ✓ Step 3/7: Context-aware VLM extraction (Phase 1)
 # ✓ Step 4/7: Build dependency graph
+# ✓ Step 4.5/7: SAM3 segmentation (optional, if enabled)
 # ✓ Step 5/7: Build hierarchical graph (enhanced with context hints)
 # ✓ Step 6/7: Generate 3D plan
 # ✓ Step 7/7: Ingest into vector store (multimodal embeddings)
@@ -198,12 +210,29 @@ uv run python main.py <url> --no-multimodal
 # Start from scratch (ignore checkpoint)
 uv run python main.py <url> --no-resume
 
-# Disable spatial features for comparison testing
-uv run python main.py <url> --no-spatial
+# Use fallback VLMs if primary fails
+uv run python main.py <url> --use-fallback
+
+# Don't display plans in console
+uv run python main.py <url> --no-display
+
+# Enable VLM response caching
+uv run python main.py <url> --cache
+
+# Set custom output directory
+uv run python main.py <url> -o ./custom_output
+
+# Set custom assembly ID
+uv run python main.py <url> --assembly-id my_custom_id
+
+# Set logging level
+uv run python main.py <url> --log-level DEBUG
 
 # View all options
 uv run python main.py --help
 ```
+
+**Note**: To disable spatial features, set `ENABLE_SPATIAL_RELATIONSHIPS=false` in your `.env` file before running.
 
 ### Step 3b: Comparison Testing (Optional)
 
@@ -218,12 +247,16 @@ uv run python main.py manual.pdf \
   --assembly-id manual_baseline
 
 # No spatial features (comparison mode)
+# Set environment variable before running
+export ENABLE_SPATIAL_RELATIONSHIPS=false
 uv run python main.py manual.pdf \
   -o output/no_spatial \
-  --assembly-id manual_no_spatial \
-  --no-spatial
+  --assembly-id manual_no_spatial
 
-# The --no-spatial flag disables:
+# Or add to .env file temporarily:
+# ENABLE_SPATIAL_RELATIONSHIPS=false
+
+# This disables:
 #   - Spatial relationships extraction (saves ~10-15% VLM tokens)
 #   - Spatial-temporal pattern analysis
 #   - Results in faster processing and simpler graphs
@@ -274,9 +307,11 @@ output/*/manual_*_graph_summary.txt:
 ### Step 4: Start Backend (Terminal 1)
 
 ```bash
-cd backend
+# Option 1: Use the startup script (recommended)
+./start_backend.sh
 
-# Start backend server (manual already ingested!)
+# Option 2: Manual start
+cd backend
 uv run uvicorn app.main:app --reload --port 8000
 
 # ✓ Backend running at http://localhost:8000
@@ -287,16 +322,21 @@ Keep this terminal running!
 
 **Note**: The manual is already in the vector store from Step 3. No additional ingestion needed!
 
+**Backend Configuration**:
+- Uses environment variables from `.env` in project root
+- API keys are automatically detected by LiteLLM
+- Default models: Gemini 2.5 Flash for embeddings and text generation
+- Vector database: `backend/chroma_db/`
+
 **What happens during the workflow?** 📦
 
 The complete workflow processes your manual in 7 integrated steps:
 
 **Steps 1-6: Extraction & Graph Building**
 1. **Page Extraction**: Converts PDF to individual page images
-2. **📄 Document Understanding (Phase 0 - NEW)**:
-   - Analyzes PDF structure with VLM
-   - Identifies instruction pages vs. covers/ads/inventory
-   - Filters out irrelevant pages (saves 10-15% API calls)
+2. **📄 User Metadata Collection (Phase 0 - NEW)**:
+   - Interactive collection of manual metadata (build name, page ranges, step info)
+   - Filters to only instruction pages (saves 10-15% API calls)
    - **Asks for user confirmation** before proceeding
 3. **🧠 Context-Aware VLM Extraction (Phase 1 - NEW)**:
    - Initializes build memory (sliding window + long-term tracking)
@@ -304,6 +344,7 @@ The complete workflow processes your manual in 7 integrated steps:
    - Generates enhanced subassembly hints (20-30% better accuracy)
    - Captures inter-step references automatically
 4. **Dependency Graph**: Infers step dependencies
+4.5. **SAM3 Segmentation** (optional): Pixel-level part segmentation using Roboflow API
 5. **Hierarchical Graph**: Builds parts → subassemblies → model structure (enhanced with Phase 1 hints)
 6. **3D Plan Generation**: Creates assembly plan with spatial coordinates
 
@@ -349,7 +390,10 @@ Converts Phase 1 output into a searchable vector database:
 ### Step 5: Start Frontend (Terminal 2)
 
 ```bash
-# Navigate to frontend (new terminal)
+# Option 1: Use the startup script (recommended)
+./start_frontend.sh
+
+# Option 2: Manual start
 cd frontend
 
 # Install dependencies (first time only)
@@ -427,11 +471,12 @@ The graph.json is now enhanced with better subassembly detection from Phase 1:
 
 ### Document Analysis Issues
 
-**Problem**: Phase 0 misclassifies pages
+**Problem**: Phase 0 metadata collection is incorrect
 ```bash
-# The system will ask for confirmation - you can reject and adjust
-# Or skip Phase 0 filtering entirely:
-uv run python main.py <url> --skip-phase0  # (not implemented yet, will fallback gracefully)
+# The system will ask for confirmation during metadata collection
+# You can provide accurate page ranges and step information
+# If you need to reprocess, use --no-resume to start fresh
+uv run python main.py <url> --no-resume
 ```
 
 ### Context Memory Issues
@@ -475,11 +520,13 @@ cat frontend/.env.local
 # Make sure you use unique --assembly-id for each version!
 # Correct:
 uv run python main.py manual.pdf --assembly-id baseline
-uv run python main.py manual.pdf --assembly-id no_spatial --no-spatial
+export ENABLE_SPATIAL_RELATIONSHIPS=false
+uv run python main.py manual.pdf --assembly-id no_spatial
 
 # Wrong (will overwrite):
 uv run python main.py manual.pdf  # Uses filename as ID
-uv run python main.py manual.pdf --no-spatial  # Same ID, overwrites!
+export ENABLE_SPATIAL_RELATIONSHIPS=false
+uv run python main.py manual.pdf  # Same ID, overwrites!
 ```
 
 **Problem**: Can't see configuration differences in output
@@ -525,7 +572,8 @@ curl http://localhost:8000/api/manuals
    ```bash
    # Process the same manual 2 ways
    uv run python main.py manual.pdf -o output/baseline --assembly-id baseline
-   uv run python main.py manual.pdf -o output/no_spatial --assembly-id no_spatial --no-spatial
+   export ENABLE_SPATIAL_RELATIONSHIPS=false
+   uv run python main.py manual.pdf -o output/no_spatial --assembly-id no_spatial
 
    # Compare graph outputs
    diff output/baseline/baseline_graph_summary.txt output/no_spatial/no_spatial_graph_summary.txt
@@ -556,6 +604,6 @@ curl http://localhost:8000/api/manuals
 
 ---
 
-**System Version**: 2.2.0 (with Context-Aware Processing)
+**System Version**: 2.3.0 (with Context-Aware Processing & SAM3 Integration)
 **Last Updated**: January 2026
 **Status**: ✅ Production Ready

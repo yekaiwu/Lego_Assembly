@@ -208,16 +208,12 @@ SAM3 provides automatic part and assembly segmentation using Roboflow's cloud AP
    ROBOFLOW_SAM3_OUTPUT_DIR=./output/segmented_parts
    ROBOFLOW_SAM3_SAVE_MASKS=true
    ROBOFLOW_SAM3_SAVE_CROPPED_IMAGES=true
-   ```
-
-3. **Run Integration Tests**:
-   ```bash
-   # Test your SAM3 configuration
-   uv run python test_roboflow_sam3_integration.py
+   SAM3_RETRY_ENABLED=true
+   SAM3_RETRY_VLM=gemini/gemini-robotics-er-1.5-preview
    ```
 
 **How It Works**:
-- Runs automatically after VLM extraction (Step 3.5)
+- Runs automatically after dependency graph construction (Step 4.5)
 - Uses VLM-extracted part descriptions as text prompts
 - Segments both individual parts and assembled results
 - Saves outputs to `{OUTPUT_DIR}/{assembly_id}/step_XXX/`
@@ -228,11 +224,11 @@ SAM3 provides automatic part and assembly segmentation using Roboflow's cloud AP
 output/segmented_parts/
 └── 6454922/
     ├── step_001/
-    │   ├── part_0.png              # Cropped part image
+    │   ├── part_0_image.png        # Cropped part image
     │   ├── part_0_mask.png         # Binary mask
-    │   ├── part_1.png
+    │   ├── part_1_image.png
     │   ├── part_1_mask.png
-    │   ├── assembly.png            # Assembled result crop
+    │   ├── assembly_image.png      # Assembled result crop
     │   └── assembly_mask.png       # Assembly mask
     ├── step_002/
     │   └── ...
@@ -258,11 +254,18 @@ ENABLE_ROBOFLOW_SAM3=false
 # Process LEGO manual from URL (automatically extracts AND ingests)
 uv run python main.py https://www.lego.com/cdn/product-assets/product.bi.core.pdf/6454922.pdf
 
+# Or process a local PDF file
+uv run python main.py path/to/manual.pdf
+
+# Or run in interactive mode (will prompt for URL)
+uv run python main.py
+
 # NEW: 7-Step Enhanced Workflow
 # ✓ Step 1: Extract pages from PDF
-# ✓ Step 2: Analyze document & filter pages (Phase 0) → User confirmation
+# ✓ Step 2: Collect user metadata & filter pages (Phase 0) → User confirmation
 # ✓ Step 3: Context-aware VLM extraction (Phase 1)
 # ✓ Step 4: Build dependency graph
+# ✓ Step 4.5: SAM3 segmentation (optional, if enabled)
 # ✓ Step 5: Build hierarchical graph (enhanced with context hints)
 # ✓ Step 6: Generate 3D assembly plans
 # ✓ Step 7: Ingest into vector store with multimodal embeddings
@@ -308,18 +311,35 @@ uv run python main.py <url> --no-multimodal
 # Start from scratch (ignore checkpoint)
 uv run python main.py <url> --no-resume
 
-# Disable spatial features (see Comparison Testing below)
-uv run python main.py <url> --no-spatial
+# Use fallback VLMs if primary fails
+uv run python main.py <url> --use-fallback
+
+# Don't display plans in console (only save to files)
+uv run python main.py <url> --no-display
+
+# Enable VLM response caching
+uv run python main.py <url> --cache
+
+# Set custom output directory
+uv run python main.py <url> -o ./custom_output
+
+# Set custom assembly ID
+uv run python main.py <url> --assembly-id my_custom_id
+
+# Set logging level
+uv run python main.py <url> --log-level DEBUG
 
 # View all options
 uv run python main.py --help
 ```
 
+**Note**: The `--no-spatial` flag mentioned in some documentation is not currently implemented in the CLI. Spatial relationships are enabled by default and can be controlled via the `ENABLE_SPATIAL_RELATIONSHIPS` environment variable in `.env`.
+
 ### 3b. Comparison Testing: Spatial Features A/B Testing
 
-**🔬 NEW: Compare manual processing with/without spatial features**
+**🔬 Compare manual processing with/without spatial features**
 
-The `--no-spatial` flag disables all spatial processing features:
+Spatial features can be controlled via the `ENABLE_SPATIAL_RELATIONSHIPS` environment variable:
 - **Spatial Relationships**: VLM-extracted 3D positioning data (position, rotation, alignment)
 - **Spatial-Temporal Patterns**: Post-processing pattern analysis (progressive sequences)
 
@@ -333,7 +353,7 @@ The `--no-spatial` flag disables all spatial processing features:
 **Step-by-Step Comparison Workflow**:
 
 ```bash
-# 1. Full Features (Baseline)
+# 1. Full Features (Baseline - default)
 uv run python main.py manual.pdf \
   -o output/baseline \
   --assembly-id manual_baseline
@@ -343,10 +363,14 @@ uv run python main.py manual.pdf \
 #   Spatial-Temporal Patterns: Enabled
 
 # 2. No Spatial Features (Comparison)
+# Set environment variable before running
+export ENABLE_SPATIAL_RELATIONSHIPS=false
 uv run python main.py manual.pdf \
   -o output/no_spatial \
-  --assembly-id manual_no_spatial \
-  --no-spatial
+  --assembly-id manual_no_spatial
+
+# Or add to .env file:
+# ENABLE_SPATIAL_RELATIONSHIPS=false
 
 # VLM extraction skips spatial data (saves ~10-15% tokens)
 # Spatial reasoning uses default positions only
@@ -417,7 +441,7 @@ print('No-spatial config:', no_spatial['metadata']['configuration'])
 
 **💡 Expected Differences**:
 
-| Aspect | Baseline (Spatial Enabled) | No Spatial (--no-spatial) |
+| Aspect | Baseline (Spatial Enabled) | No Spatial (ENABLE_SPATIAL_RELATIONSHIPS=false) |
 |--------|---------------------------|---------------------------|
 | VLM Tokens | 100% | ~85-90% (saves 10-15%) |
 | Spatial Data | Full 3D coordinates | Default positions only |
@@ -430,16 +454,17 @@ print('No-spatial config:', no_spatial['metadata']['configuration'])
 **🎯 When to Use Each Mode**:
 
 - **Baseline (default)**: Production use, best overall accuracy, spatial reasoning needed
-- **No Spatial (--no-spatial)**: Faster processing, simpler graphs, when manual has poor/unclear spatial info, resource-constrained environments, or for comparison testing
+- **No Spatial (ENABLE_SPATIAL_RELATIONSHIPS=false)**: Faster processing, simpler graphs, when manual has poor/unclear spatial info, resource-constrained environments, or for comparison testing
 
 ### 4. Start RAG Backend
 
 ```bash
-# Navigate to backend
-cd backend
+# Option 1: Use the startup script (recommended)
+./start_backend.sh
 
-# Start FastAPI server
-uvicorn app.main:app --reload --port 8000
+# Option 2: Manual start
+cd backend
+uv run uvicorn app.main:app --reload --port 8000
 
 # Access at: http://localhost:8000
 # API docs: http://localhost:8000/docs
@@ -447,13 +472,22 @@ uvicorn app.main:app --reload --port 8000
 
 **Note**: Manual is already ingested from Step 3! Just start the backend and you're ready to query.
 
+**Backend Configuration**:
+- The backend uses environment variables from `.env` in the project root
+- API keys are automatically detected by LiteLLM
+- Default models: Gemini 2.5 Flash for embeddings and text generation
+- Vector database location: `backend/chroma_db/`
+
 ### 5. Start Frontend
 
 ```bash
-# Navigate to frontend (new terminal)
+# Option 1: Use the startup script (recommended)
+./start_frontend.sh
+
+# Option 2: Manual start
 cd frontend
 
-# Install dependencies
+# Install dependencies (first time only)
 npm install
 
 # Configure backend URL
@@ -1021,6 +1055,6 @@ For issues or questions:
 2. Review API documentation at `/docs` endpoint
 3. Check configuration in `.env` file
 
-**System Version**: 2.2.0 (with Context-Aware Processing)
+**System Version**: 2.3.0 (with Context-Aware Processing & SAM3 Integration)
 **Last Updated**: January 2026
 **Status**: ✅ Production Ready
