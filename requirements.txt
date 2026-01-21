@@ -29,6 +29,7 @@ jsonschema>=4.20.0
 # Image Processing (for video/image uploads)
 Pillow>=10.0.0
 opencv-python-headless>=4.8.0  # Headless version (no GUI, smaller)
+PyMuPDF>=1.23.0  # PDF processing (required by manual_input_handler)
 
 # Video Processing (numpy required by opencv)
 numpy>=1.24.0
