@@ -1177,6 +1177,524 @@ async def get_node_hierarchy(
 
 # ==================== Startup & Shutdown ====================
 
+# ==================== Video Analysis API ====================
+
+from fastapi import BackgroundTasks, Form
+from .models.video_models import (
+    VideoUploadResponse,
+    VideoAnalysisResponse,
+    AnalysisResults,
+    OverlayOptions,
+    OverlayGenerationResponse,
+    ActiveStepResponse,
+)
+from .video.storage_manager import VideoStorageManager, AnalysisStorageManager
+from .video.metadata_extractor import extract_video_metadata, validate_video_format
+from .video.video_analyzer import VideoAnalyzer
+from .video.overlay_renderer import create_overlay_video
+from .utils.background_tasks import TaskManager, TaskStatus
+
+# Initialize video services
+video_storage = VideoStorageManager()
+analysis_storage = AnalysisStorageManager()
+task_manager = TaskManager()
+
+
+@app.post("/api/video/upload", response_model=VideoUploadResponse)
+async def upload_video(
+    manual_id: str = Form(...),
+    video: UploadFile = File(...)
+):
+    """
+    Upload assembly video for analysis.
+
+    Args:
+        manual_id: Manual ID this video belongs to
+        video: Video file (MP4, MOV, AVI)
+
+    Returns:
+        Video metadata and upload confirmation
+    """
+    try:
+        # Validate file format
+        temp_path = f"/tmp/{video.filename}"
+        with open(temp_path, "wb") as f:
+            f.write(await video.read())
+
+        if not validate_video_format(temp_path):
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid video format. Supported: MP4, MOV, AVI"
+            )
+
+        # Extract metadata
+        metadata = extract_video_metadata(temp_path)
+
+        # Save video
+        with open(temp_path, "rb") as f:
+            video_data = f.read()
+
+        video_id, video_path = video_storage.save_uploaded_video(
+            video_data,
+            manual_id,
+            video.filename
+        )
+
+        # Cleanup temp file
+        Path(temp_path).unlink()
+
+        logger.info(f"Uploaded video {video_id} for manual {manual_id}")
+
+        return VideoUploadResponse(
+            video_id=video_id,
+            filename=video.filename,
+            **metadata
+        )
+
+    except Exception as e:
+        logger.error(f"Error uploading video: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+async def run_video_analysis(
+    video_path: str,
+    manual_id: str,
+    analysis_id: str,
+    extracted_path: str,
+    dependencies_path: Optional[str],
+    reference_images: List[str]
+):
+    """Background task for video analysis."""
+    try:
+        # Update task status
+        task_manager.update_task(
+            analysis_id,
+            status=TaskStatus.PROCESSING,
+            progress=10,
+            current_step="Initializing video analyzer"
+        )
+
+        # Initialize analyzer
+        api_key = settings.gemini_api_key
+        analyzer = VideoAnalyzer(api_key=api_key)
+
+        task_manager.update_task(
+            analysis_id,
+            progress=20,
+            current_step="Analyzing video with VLM"
+        )
+
+        # Run analysis
+        results = analyzer.analyze_video(
+            video_path=video_path,
+            manual_id=manual_id,
+            dependencies_path=dependencies_path,
+            extracted_data_path=extracted_path,
+            reference_images=reference_images
+        )
+
+        task_manager.update_task(
+            analysis_id,
+            progress=80,
+            current_step="Saving results"
+        )
+
+        # Save results
+        results['analysis_id'] = analysis_id
+        analysis_storage.save_analysis_results(
+            results,
+            manual_id,
+            analysis_id
+        )
+
+        task_manager.update_task(
+            analysis_id,
+            status=TaskStatus.COMPLETED,
+            progress=100,
+            current_step="Analysis complete"
+        )
+
+        logger.info(f"Video analysis completed: {analysis_id}")
+
+    except Exception as e:
+        logger.error(f"Video analysis failed: {e}")
+        task_manager.update_task(
+            analysis_id,
+            status=TaskStatus.ERROR,
+            error=str(e)
+        )
+
+
+@app.post("/api/video/analyze", response_model=VideoAnalysisResponse)
+async def analyze_video(
+    manual_id: str = Query(...),
+    video_id: str = Query(...),
+    background_tasks: BackgroundTasks = None
+):
+    """
+    Analyze video to detect assembly steps.
+
+    This is a long-running operation (2-5 minutes).
+
+    Args:
+        manual_id: Manual ID
+        video_id: Video ID from upload
+
+    Returns:
+        Analysis job information
+    """
+    try:
+        # Get video path
+        video_path = video_storage.get_video_path(manual_id, video_id)
+        if not video_path:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Video {video_id} not found for manual {manual_id}"
+            )
+
+        # Check if manual data exists
+        output_dir = Path(settings.output_dir)
+        extracted_path = output_dir / f"{manual_id}_extracted.json"
+        dependencies_path = output_dir / f"{manual_id}_dependencies.json"
+
+        if not extracted_path.exists():
+            raise HTTPException(
+                status_code=404,
+                detail=f"Manual {manual_id} not processed. Run manual processing first."
+            )
+
+        # Get reference images (first 10 step images)
+        temp_pages_dir = output_dir / "temp_pages"
+        reference_images = []
+        if temp_pages_dir.exists():
+            reference_images = sorted(temp_pages_dir.glob("page_*.png"))[:10]
+            reference_images = [str(p) for p in reference_images]
+
+        # Create analysis task
+        analysis_id = str(uuid.uuid4())[:8]
+        task_manager.create_task(
+            analysis_id,
+            "video_analysis",
+            {"manual_id": manual_id, "video_id": video_id}
+        )
+
+        # Start background analysis
+        background_tasks.add_task(
+            run_video_analysis,
+            video_path=video_path,
+            manual_id=manual_id,
+            analysis_id=analysis_id,
+            extracted_path=str(extracted_path),
+            dependencies_path=str(dependencies_path) if dependencies_path.exists() else None,
+            reference_images=reference_images
+        )
+
+        logger.info(f"Started video analysis: {analysis_id}")
+
+        return VideoAnalysisResponse(
+            analysis_id=analysis_id,
+            message=f"Analysis started. Check status at /api/video/analysis/{analysis_id}"
+        )
+
+    except Exception as e:
+        logger.error(f"Error starting video analysis: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/video/analysis/{analysis_id}", response_model=AnalysisResults)
+async def get_analysis_status(analysis_id: str):
+    """
+    Get status of video analysis or overlay generation.
+
+    Args:
+        analysis_id: Analysis job ID or overlay job ID
+
+    Returns:
+        Analysis status or results if complete
+    """
+    try:
+        task_info = task_manager.get_task(analysis_id)
+
+        if not task_info:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Task {analysis_id} not found"
+            )
+
+        # Handle overlay tasks differently
+        is_overlay_task = analysis_id.startswith("overlay_")
+
+        if task_info["status"] == TaskStatus.COMPLETED:
+            if is_overlay_task:
+                # For overlay tasks, return the task metadata as results
+                return AnalysisResults(
+                    analysis_id=analysis_id,
+                    status="completed",
+                    results={
+                        "type": "overlay",
+                        "analysis_id": task_info["metadata"].get("analysis_id"),
+                        "manual_id": task_info["metadata"].get("manual_id")
+                    },
+                    processing_time_sec=task_info.get("duration_sec")
+                )
+            else:
+                # For analysis tasks, load results file
+                manual_id = task_info["metadata"]["manual_id"]
+                results = analysis_storage.load_analysis_results(manual_id, analysis_id)
+
+                if results is None:
+                    logger.warning(f"Results file not found for completed analysis {analysis_id}")
+                    # Return with empty results if file missing
+                    results = {}
+
+                return AnalysisResults(
+                    analysis_id=analysis_id,
+                    status="completed",
+                    results=results,
+                    processing_time_sec=task_info.get("duration_sec")
+                )
+        else:
+            # Return status for in-progress tasks
+            return AnalysisResults(
+                analysis_id=analysis_id,
+                status=task_info["status"],
+                results={
+                    "progress_percentage": task_info["progress_percentage"],
+                    "current_step": task_info["current_step"]
+                }
+            )
+
+    except Exception as e:
+        logger.error(f"Error getting analysis status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+async def run_overlay_generation(
+    video_path: str,
+    analysis_id: str,
+    manual_id: str,
+    overlay_id: str,
+    options: OverlayOptions
+):
+    """Background task for overlay generation."""
+    try:
+        task_manager.update_task(
+            overlay_id,
+            status=TaskStatus.PROCESSING,
+            progress=10,
+            current_step="Loading analysis results"
+        )
+
+        # Load analysis results
+        results = analysis_storage.load_analysis_results(manual_id, analysis_id)
+
+        task_manager.update_task(
+            overlay_id,
+            progress=30,
+            current_step="Rendering overlay video"
+        )
+
+        # Generate overlay
+        overlay_output = f"/tmp/overlay_{overlay_id}.mp4"
+        create_overlay_video(
+            video_path=video_path,
+            analysis_results=results,
+            output_path=overlay_output,
+            show_target=options.show_target_marker,
+            show_hud=options.show_hud_panel,
+            show_instruction=options.show_instruction_card
+        )
+
+        task_manager.update_task(
+            overlay_id,
+            progress=80,
+            current_step="Saving overlay video"
+        )
+
+        # Save overlay
+        video_id = results.get('video_path', '').split('/')[-1].split('_')[0]
+        video_storage.save_overlay_video(overlay_output, manual_id, video_id)
+
+        # Cleanup temp file
+        Path(overlay_output).unlink()
+
+        task_manager.update_task(
+            overlay_id,
+            status=TaskStatus.COMPLETED,
+            progress=100,
+            current_step="Overlay complete"
+        )
+
+        logger.info(f"Overlay generation completed: {overlay_id}")
+
+    except Exception as e:
+        logger.error(f"Overlay generation failed: {e}")
+        task_manager.update_task(
+            overlay_id,
+            status=TaskStatus.ERROR,
+            error=str(e)
+        )
+
+
+@app.post("/api/video/overlay", response_model=OverlayGenerationResponse)
+async def generate_overlay(
+    analysis_id: str = Query(...),
+    options: OverlayOptions = None,
+    background_tasks: BackgroundTasks = None
+):
+    """
+    Generate annotated video with visual overlays.
+
+    Args:
+        analysis_id: Analysis ID
+        options: Overlay rendering options
+
+    Returns:
+        Overlay generation job info
+    """
+    try:
+        if options is None:
+            options = OverlayOptions()
+
+        # Load analysis results to get video path and manual_id
+        task_info = task_manager.get_task(analysis_id)
+        if not task_info or task_info["status"] != TaskStatus.COMPLETED:
+            raise HTTPException(
+                status_code=400,
+                detail="Analysis must be completed before generating overlay"
+            )
+
+        manual_id = task_info["metadata"]["manual_id"]
+        video_id = task_info["metadata"]["video_id"]
+
+        video_path = video_storage.get_video_path(manual_id, video_id)
+        if not video_path:
+            raise HTTPException(status_code=404, detail="Video not found")
+
+        # Create overlay task
+        overlay_id = f"overlay_{str(uuid.uuid4())[:8]}"
+        task_manager.create_task(
+            overlay_id,
+            "overlay_generation",
+            {"analysis_id": analysis_id, "manual_id": manual_id}
+        )
+
+        # Start background generation
+        background_tasks.add_task(
+            run_overlay_generation,
+            video_path=video_path,
+            analysis_id=analysis_id,
+            manual_id=manual_id,
+            overlay_id=overlay_id,
+            options=options
+        )
+
+        return OverlayGenerationResponse(
+            overlay_id=overlay_id,
+            estimated_time_sec=90
+        )
+
+    except Exception as e:
+        logger.error(f"Error starting overlay generation: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/video/step-at-time", response_model=ActiveStepResponse)
+async def get_step_at_timestamp(
+    analysis_id: str = Query(...),
+    timestamp_sec: float = Query(...)
+):
+    """
+    Get which step is active at a specific timestamp.
+
+    Args:
+        analysis_id: Analysis ID
+        timestamp_sec: Time in seconds
+
+    Returns:
+        Active step information
+    """
+    try:
+        task_info = task_manager.get_task(analysis_id)
+        if not task_info:
+            raise HTTPException(status_code=404, detail="Analysis not found")
+
+        manual_id = task_info["metadata"]["manual_id"]
+        results = analysis_storage.load_analysis_results(manual_id, analysis_id)
+
+        # Find active event
+        active_event = None
+        for event in results.get('detected_events', []):
+            if event['start_seconds'] <= timestamp_sec <= event['end_seconds']:
+                active_event = event
+                break
+
+        if active_event:
+            return ActiveStepResponse(
+                timestamp_sec=timestamp_sec,
+                active_step=active_event
+            )
+        else:
+            return ActiveStepResponse(
+                timestamp_sec=timestamp_sec,
+                active_step=None,
+                message="No step detected at this timestamp"
+            )
+
+    except Exception as e:
+        logger.error(f"Error getting step at timestamp: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/video/download/{overlay_id}")
+async def download_overlay_video(
+    overlay_id: str
+):
+    """
+    Download generated overlay video.
+
+    Args:
+        overlay_id: Overlay ID
+
+    Returns:
+        Video file
+    """
+    try:
+        # Extract analysis_id from overlay_id task
+        task_info = task_manager.get_task(overlay_id)
+        if not task_info or task_info["status"] != TaskStatus.COMPLETED:
+            raise HTTPException(
+                status_code=404,
+                detail="Overlay not found or not yet complete"
+            )
+
+        manual_id = task_info["metadata"]["manual_id"]
+        analysis_id = task_info["metadata"]["analysis_id"]
+
+        # Get analysis to find video_id
+        analysis_results = analysis_storage.load_analysis_results(manual_id, analysis_id)
+        video_path = analysis_results.get('video_path', '')
+        video_id = video_path.split('/')[-1].split('_')[0]
+
+        # Get overlay path
+        overlay_path = video_storage.get_overlay_path(manual_id, video_id)
+
+        if not overlay_path or not Path(overlay_path).exists():
+            raise HTTPException(status_code=404, detail="Overlay video not found")
+
+        return FileResponse(
+            overlay_path,
+            media_type="video/mp4",
+            filename=f"assembly_overlay_{overlay_id}.mp4"
+        )
+
+    except Exception as e:
+        logger.error(f"Error downloading overlay: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==================== Startup & Shutdown ====================
+
 @app.on_event("startup")
 async def startup_event():
     """Initialize services on startup."""

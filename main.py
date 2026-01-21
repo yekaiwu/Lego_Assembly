@@ -325,75 +325,7 @@ def main(
 
         logger.info("")
 
-        # Step 3.5: SAM3 Segmentation (Optional)
-        if config.roboflow.enabled:
-            logger.info("Step 3.5/7: Running SAM3 segmentation on extracted steps...")
-
-            try:
-                from src.vision_processing.roboflow_sam3_segmenter import RoboflowSAM3Segmenter
-
-                # Initialize segmenter
-                segmenter = RoboflowSAM3Segmenter(
-                    api_key=config.roboflow.api_key,
-                    confidence_threshold=config.roboflow.sam3_confidence_threshold,
-                    output_dir=config.roboflow.sam3_output_dir,
-                    save_masks=config.roboflow.sam3_save_masks,
-                    save_cropped_images=config.roboflow.sam3_save_cropped_images,
-                    output_format=config.roboflow.sam3_output_format,
-                    retry_vlm=config.roboflow.sam3_retry_vlm,
-                    retry_enabled=config.roboflow.sam3_retry_enabled
-                )
-
-                logger.info(f"Processing {len(extracted_steps)} steps with SAM3...")
-
-                # Segment each step
-                for i, step in enumerate(extracted_steps):
-                    step_number = step.get("step_number", i + 1)
-                    image_paths = step.get("_source_page_paths", [])
-
-                    if not image_paths:
-                        logger.warning(f"  Step {step_number}: No source image path found")
-                        continue
-
-                    image_path = image_paths[0]  # Use first image path
-
-                    try:
-                        logger.info(f"  Segmenting step {step_number}...")
-                        segmented_step = segmenter.process_step(
-                            image_path=image_path,
-                            extracted_step=step,
-                            assembly_id=assembly_id
-                        )
-
-                        # Update step with segmentation data
-                        extracted_steps[i] = segmented_step
-
-                        # Count parts with successful segmentation (have bounding_box)
-                        parts_list = segmented_step.get("parts_required", [])
-                        parts_segmented = sum(1 for p in parts_list if p.get("bounding_box"))
-
-                        # Check if assembly was segmented (has bounding_box)
-                        assembled_product = segmented_step.get("assembled_product", {})
-                        assembly_ok = "✓" if isinstance(assembled_product, dict) and assembled_product.get("bounding_box") else "✗"
-
-                        logger.info(f"    ✓ Parts: {parts_segmented}/{len(parts_list)}, Assembly: {assembly_ok}")
-
-                    except Exception as e:
-                        logger.warning(f"    ✗ SAM3 segmentation failed for step {step_number}: {e}")
-                        # Continue pipeline without segmentation data for this step
-
-                logger.info("✓ SAM3 segmentation complete")
-                logger.info("")
-
-            except Exception as e:
-                logger.error(f"Failed to initialize SAM3 segmenter: {e}")
-                logger.warning("Continuing without segmentation data")
-                logger.info("")
-        else:
-            logger.info("Step 3.5/7: SAM3 segmentation disabled (ENABLE_ROBOFLOW_SAM3=false)")
-            logger.info("")
-
-        # Save final extracted data
+        # Save extracted data (without SAM3)
         extracted_path = output_dir / f"{assembly_id}_extracted.json"
         with open(extracted_path, 'w', encoding='utf-8') as f:
             json.dump(extracted_steps, f, indent=2, ensure_ascii=False)
@@ -442,7 +374,98 @@ def main(
         dep_graph = DependencyGraph()
         dep_graph.nodes = dep_graph_dict.get('nodes', {})
         dep_graph.edges = dep_graph_dict.get('edges', [])
-    
+
+    # Step 4.5: SAM3 Segmentation (Optional) - Run on filtered/renumbered dependency graph
+    if not checkpoint.is_step_complete("sam3_segmentation"):
+        if config.roboflow.enabled:
+            logger.info("Step 4.5/7: Running SAM3 segmentation on dependency graph...")
+
+            try:
+                from src.vision_processing.roboflow_sam3_segmenter import RoboflowSAM3Segmenter
+
+                # Initialize segmenter
+                segmenter = RoboflowSAM3Segmenter(
+                    api_key=config.roboflow.api_key,
+                    confidence_threshold=config.roboflow.sam3_confidence_threshold,
+                    output_dir=config.roboflow.sam3_output_dir,
+                    save_masks=config.roboflow.sam3_save_masks,
+                    save_cropped_images=config.roboflow.sam3_save_cropped_images,
+                    output_format=config.roboflow.sam3_output_format,
+                    retry_vlm=config.roboflow.sam3_retry_vlm,
+                    retry_enabled=config.roboflow.sam3_retry_enabled
+                )
+
+                logger.info(f"Processing {len(dep_graph.nodes)} steps with SAM3...")
+
+                # Process each step from dependency graph (already filtered and renumbered)
+                for step_num_str, step_data in dep_graph.nodes.items():
+                    step_number = step_data.get("step_number")
+                    image_paths = step_data.get("_source_page_paths", [])
+
+                    if not image_paths:
+                        logger.warning(f"  Step {step_number}: No source image path found")
+                        continue
+
+                    image_path = image_paths[0]  # Use first image path
+
+                    try:
+                        logger.info(f"  Segmenting step {step_number}...")
+                        segmented_step = segmenter.process_step(
+                            image_path=image_path,
+                            extracted_step=step_data,
+                            assembly_id=assembly_id
+                        )
+
+                        # Update dependency graph node with segmentation data
+                        dep_graph.nodes[step_num_str] = segmented_step
+
+                        # Count parts with successful segmentation (have bounding_box)
+                        parts_list = segmented_step.get("parts_required", [])
+                        parts_segmented = sum(1 for p in parts_list if p.get("bounding_box"))
+
+                        # Check if assembly was segmented (has bounding_box)
+                        assembled_product = segmented_step.get("assembled_product", {})
+                        assembly_ok = "✓" if isinstance(assembled_product, dict) and assembled_product.get("bounding_box") else "✗"
+
+                        logger.info(f"    ✓ Parts: {parts_segmented}/{len(parts_list)}, Assembly: {assembly_ok}")
+
+                    except Exception as e:
+                        logger.warning(f"    ✗ SAM3 segmentation failed for step {step_number}: {e}")
+                        # Continue pipeline without segmentation data for this step
+
+                # Save updated dependency graph with SAM3 data
+                graph_path = output_dir / f"{assembly_id}_dependencies.json"
+                with open(graph_path, 'w', encoding='utf-8') as f:
+                    json.dump(dep_graph.to_dict(), f, indent=2)
+                logger.info(f"Updated dependency graph with SAM3 data: {graph_path}")
+
+                logger.info("✓ SAM3 segmentation complete")
+                logger.info("")
+
+                checkpoint.save("sam3_segmentation")
+
+            except Exception as e:
+                logger.error(f"Failed to initialize SAM3 segmenter: {e}")
+                logger.warning("Continuing without segmentation data")
+                logger.info("")
+        else:
+            logger.info("Step 4.5/7: SAM3 segmentation disabled (ENABLE_ROBOFLOW_SAM3=false)")
+            logger.info("")
+            checkpoint.save("sam3_segmentation")
+    else:
+        logger.info("Step 4.5/7: ✓ SAM3 segmentation already complete (skipping)")
+        # Reload dependency graph with SAM3 data
+        graph_path = output_dir / f"{assembly_id}_dependencies.json"
+        with open(graph_path, 'r', encoding='utf-8') as f:
+            dep_graph_dict = json.load(f)
+        dep_graph.nodes = dep_graph_dict.get('nodes', {})
+        dep_graph.edges = dep_graph_dict.get('edges', [])
+        logger.info("")
+
+    # Convert dependency graph nodes back to list for downstream processing
+    # Use filtered and renumbered steps from dependency graph
+    cleaned_steps = list(dep_graph.nodes.values())
+
     # Step 5: Hierarchical Assembly Graph Construction (Phase 2 - Already Implemented)
     if not checkpoint.is_step_complete("hierarchical_graph"):
         logger.info("Step 5/7: Building hierarchical assembly graph (Phase 2)...")
@@ -452,7 +475,7 @@ def main(
         )
 
         hierarchical_graph = graph_builder.build_graph(
-            extracted_steps=extracted_steps,
+            extracted_steps=cleaned_steps,
             assembly_id=assembly_id,
             image_dir=output_dir / "temp_pages"
         )
@@ -477,11 +500,11 @@ def main(
         metadata = {
             "source": str(input_path),
             "manual_pages": len(page_paths),
-            "step_count": len(extracted_steps)
+            "step_count": len(cleaned_steps)
         }
-        
+
         assembly_plan = plan_generator.generate_plan(
-            extracted_steps=extracted_steps,
+            extracted_steps=cleaned_steps,
             dependency_graph=dep_graph,
             assembly_id=assembly_id,
             metadata=metadata

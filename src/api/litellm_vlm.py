@@ -58,7 +58,7 @@ class UnifiedVLMClient:
 
     def _call_with_retry(self, messages: List[Dict], response_format: Optional[Dict] = None, max_retries: int = 5):
         """
-        Call litellm.completion with retry logic for 503 overloaded errors.
+        Call litellm.completion with retry logic for transient errors.
 
         Args:
             messages: Messages to send to the model
@@ -87,20 +87,37 @@ class UnifiedVLMClient:
                 response = litellm.completion(**kwargs)
                 return response
 
-            except litellm.InternalServerError as e:
+            except Exception as e:
                 error_str = str(e)
-                # Check if it's a 503 overloaded error
-                if "503" in error_str and ("overloaded" in error_str.lower() or "unavailable" in error_str.lower()):
+                error_type = type(e).__name__
+
+                # Check if it's a retryable error (503, 429, 500, timeout, etc.)
+                is_retryable = any([
+                    "503" in error_str,
+                    "overloaded" in error_str.lower(),
+                    "unavailable" in error_str.lower(),
+                    "429" in error_str,  # Rate limit
+                    "rate limit" in error_str.lower(),
+                    "timeout" in error_str.lower(),
+                    "500" in error_str,  # Internal server error
+                    isinstance(e, (litellm.InternalServerError, litellm.RateLimitError, litellm.Timeout))
+                ])
+
+                if is_retryable:
                     if attempt < max_retries - 1:
                         wait_time = retry_delay * (2 ** attempt)  # Exponential backoff
-                        logger.warning(f"Model overloaded (503), retrying in {wait_time}s (attempt {attempt + 1}/{max_retries})...")
+                        logger.warning(
+                            f"Transient error ({error_type}), retrying in {wait_time}s "
+                            f"(attempt {attempt + 1}/{max_retries}): {str(e)[:200]}"
+                        )
                         time.sleep(wait_time)
                         continue
                     else:
                         logger.error(f"LiteLLM call failed after {max_retries} retries: {e}")
                         raise
                 else:
-                    # Non-503 InternalServerError, don't retry
+                    # Non-retryable error, raise immediately
+                    logger.error(f"Non-retryable error ({error_type}): {e}")
                     raise
 
     def extract_step_info(
