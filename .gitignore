@@ -54,9 +54,8 @@ output/
 !railway.json
 !railpack.json
 *.txt
-# Exception: requirements files needed for deployment
-!requirements*.txt
-!backend/requirements*.txt
+# Exception: requirements.txt needed for Railway deployment
+!requirements.txt
 
 # OS
 .DS_Store
