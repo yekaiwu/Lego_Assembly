@@ -50,6 +50,9 @@ data/*.sqlite3
 # Output
 output/
 *.json
+# Exception: Railway config files needed for deployment
+!railway.json
+!railpack.json
 *.txt
 # Exception: requirements files needed for deployment
 !requirements*.txt
