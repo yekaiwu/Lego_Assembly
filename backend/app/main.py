@@ -158,6 +158,84 @@ async def delete_manual(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/upload/manual/{manual_id}")
+async def upload_manual_files(
+    manual_id: str = PathParam(..., description="Manual identifier"),
+    extracted_json: UploadFile = File(..., description="extracted.json file"),
+    plan_json: UploadFile = File(..., description="plan.json file"),
+    dependencies_json: UploadFile = File(..., description="dependencies.json file"),
+    plan_txt: UploadFile = File(None, description="plan.txt file (optional)"),
+    graph_json: UploadFile = File(None, description="graph.json file (optional)"),
+    images: List[UploadFile] = File(None, description="Step images (temp_pages/*.png)"),
+):
+    """
+    Upload manual files to Railway backend.
+    
+    Uploads all necessary files for a manual:
+    - extracted.json, plan.json, dependencies.json (required)
+    - plan.txt, graph.json (optional)
+    - Images from temp_pages/ (optional, can upload separately)
+    
+    After upload, call /api/ingest/manual/{manual_id} to ingest into vector store.
+    """
+    try:
+        output_dir = Path(settings.output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Create temp_pages directory if images are provided
+        temp_pages_dir = output_dir / "temp_pages"
+        if images:
+            temp_pages_dir.mkdir(parents=True, exist_ok=True)
+        
+        uploaded_files = []
+        
+        # Upload required JSON files
+        for file, filename in [
+            (extracted_json, f"{manual_id}_extracted.json"),
+            (plan_json, f"{manual_id}_plan.json"),
+            (dependencies_json, f"{manual_id}_dependencies.json"),
+        ]:
+            file_path = output_dir / filename
+            with open(file_path, "wb") as f:
+                shutil.copyfileobj(file.file, f)
+            uploaded_files.append(filename)
+            logger.info(f"Uploaded {filename}")
+        
+        # Upload optional files
+        if plan_txt:
+            file_path = output_dir / f"{manual_id}_plan.txt"
+            with open(file_path, "wb") as f:
+                shutil.copyfileobj(plan_txt.file, f)
+            uploaded_files.append(f"{manual_id}_plan.txt")
+        
+        if graph_json:
+            file_path = output_dir / f"{manual_id}_graph.json"
+            with open(file_path, "wb") as f:
+                shutil.copyfileobj(graph_json.file, f)
+            uploaded_files.append(f"{manual_id}_graph.json")
+        
+        # Upload images
+        if images:
+            for image in images:
+                # Preserve original filename or use index
+                filename = image.filename or f"page_{len(uploaded_files)}.png"
+                file_path = temp_pages_dir / filename
+                with open(file_path, "wb") as f:
+                    shutil.copyfileobj(image.file, f)
+                uploaded_files.append(f"temp_pages/{filename}")
+        
+        return {
+            "status": "success",
+            "manual_id": manual_id,
+            "uploaded_files": uploaded_files,
+            "message": f"Successfully uploaded {len(uploaded_files)} files for manual {manual_id}. Call /api/ingest/manual/{manual_id} to ingest."
+        }
+        
+    except Exception as e:
+        logger.error(f"Error uploading manual files: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ==================== Query API ====================
 
 @app.post("/api/query/text", response_model=QueryResponse)
