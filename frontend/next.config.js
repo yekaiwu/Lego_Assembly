@@ -10,6 +10,11 @@ const nextConfig = {
         port: '8000',
         pathname: '/api/image/**',
       },
+      {
+        protocol: 'https',
+        hostname: '*.up.railway.app',
+        pathname: '/api/image/**',
+      },
     ],
   },
 }

@@ -12,6 +12,7 @@ import { useManualStore } from '@/lib/store/manualStore'
 import { api, StateAnalysisResponse, AnalysisResults } from '@/lib/api/client'
 import { MessageSquare, Camera, Loader2, Network, Video } from 'lucide-react'
 import Link from 'next/link'
+import ApiDebug from '@/components/ApiDebug'
 
 type TabType = 'chat' | 'vision' | 'video'
 
@@ -106,6 +107,12 @@ export default function Home() {
 
       {/* Main Content */}
       <div className="max-w-7xl mx-auto px-4 py-6">
+        {/* API Debug (only in development) */}
+        {process.env.NODE_ENV === 'development' && (
+          <div className="mb-4">
+            <ApiDebug />
+          </div>
+        )}
         {/* Manual Selection */}
         <div className="mb-6">
           <ManualSelector />

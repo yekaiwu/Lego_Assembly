@@ -1,6 +1,6 @@
 'use client'
 
-import { StateAnalysisResponse } from '@/lib/api/client'
+import { StateAnalysisResponse, api } from '@/lib/api/client'
 import {
   CheckCircle2,
   AlertTriangle,
@@ -119,9 +119,7 @@ export const VisualGuidance: React.FC<VisualGuidanceProps> = ({
                 </span>
               </div>
               <img
-                src={`http://localhost:8000/api/image?path=${encodeURIComponent(
-                  analysis.reference_image
-                )}`}
+                src={api.getImageUrl(analysis.reference_image)}
                 alt="Step reference"
                 className="w-full h-auto"
               />

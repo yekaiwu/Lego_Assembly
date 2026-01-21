@@ -37,11 +37,43 @@ export default function ManualSelector() {
   }
 
   if (error) {
+    // Check if it's a network/connection error vs API error
+    const isNetworkError = error instanceof Error && (
+      error.message.includes('fetch') || 
+      error.message.includes('network') ||
+      error.message.includes('Failed to fetch')
+    )
+    
     return (
       <div className="bg-red-50 border border-red-200 rounded-lg p-6">
-        <p className="text-red-600">
-          ⚠️ Failed to load manuals. Make sure the backend server is running.
-        </p>
+        <div className="flex items-start space-x-3">
+          <div className="flex-shrink-0">
+            <span className="text-2xl">⚠️</span>
+          </div>
+          <div className="flex-1">
+            <h3 className="font-semibold text-red-800 mb-2">
+              Failed to connect to backend
+            </h3>
+            <p className="text-red-700 mb-3">
+              {isNetworkError 
+                ? "Cannot reach the backend server. Please check:"
+                : "Error loading manuals. Please check:"}
+            </p>
+            <ul className="list-disc list-inside text-sm text-red-600 space-y-1 mb-3">
+              <li>Backend server is running and accessible</li>
+              <li>API URL is correctly configured</li>
+              <li>Network connection is working</li>
+            </ul>
+            <details className="mt-3">
+              <summary className="text-sm text-red-600 cursor-pointer hover:text-red-800">
+                Technical details
+              </summary>
+              <pre className="mt-2 p-2 bg-red-100 rounded text-xs text-red-800 overflow-auto">
+                {error instanceof Error ? error.message : String(error)}
+              </pre>
+            </details>
+          </div>
+        </div>
       </div>
     )
   }
@@ -50,13 +82,56 @@ export default function ManualSelector() {
 
   if (manuals.length === 0) {
     return (
-      <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-6">
-        <p className="text-yellow-800">
-          📦 No manuals available. Please ingest manuals using the backend first.
-        </p>
-        <p className="text-sm text-yellow-600 mt-2">
-          Run: <code className="bg-yellow-100 px-2 py-1 rounded">python -m app.scripts.ingest_manual &lt;manual_id&gt;</code>
-        </p>
+      <div className="bg-blue-50 border border-blue-200 rounded-lg p-6">
+        <div className="flex items-start space-x-3">
+          <div className="flex-shrink-0">
+            <span className="text-2xl">📦</span>
+          </div>
+          <div className="flex-1">
+            <h3 className="font-semibold text-blue-800 mb-2">
+              No manuals available yet
+            </h3>
+            <p className="text-blue-700 mb-4">
+              You need to upload and ingest a manual first. Here's how:
+            </p>
+            
+            <div className="bg-white rounded-lg p-4 mb-4 border border-blue-200">
+              <h4 className="font-medium text-blue-900 mb-2">Step 1: Process Manual Locally</h4>
+              <p className="text-sm text-blue-700 mb-2">
+                Run Phase 1 processing on your local machine:
+              </p>
+              <code className="block bg-blue-50 px-3 py-2 rounded text-sm text-blue-900 mb-2">
+                uv run python main.py &lt;pdf_url&gt;
+              </code>
+              <p className="text-xs text-blue-600">
+                This creates files in <code>./output/</code> directory
+              </p>
+            </div>
+
+            <div className="bg-white rounded-lg p-4 mb-4 border border-blue-200">
+              <h4 className="font-medium text-blue-900 mb-2">Step 2: Upload to Railway</h4>
+              <p className="text-sm text-blue-700 mb-2">
+                Upload the processed files to Railway backend:
+              </p>
+              <code className="block bg-blue-50 px-3 py-2 rounded text-sm text-blue-900 mb-2">
+                python scripts/upload_manual_to_railway.py &lt;manual_id&gt; &lt;railway_url&gt;
+              </code>
+              <p className="text-xs text-blue-600">
+                Example: <code>python scripts/upload_manual_to_railway.py 6262059 https://your-app.railway.app</code>
+              </p>
+            </div>
+
+            <div className="bg-white rounded-lg p-4 border border-blue-200">
+              <h4 className="font-medium text-blue-900 mb-2">Step 3: Ingest into Vector Store</h4>
+              <p className="text-sm text-blue-700 mb-2">
+                After uploading, trigger ingestion via API:
+              </p>
+              <code className="block bg-blue-50 px-3 py-2 rounded text-sm text-blue-900">
+                curl -X POST {process.env.NEXT_PUBLIC_API_URL || 'https://your-backend.railway.app'}/api/ingest/manual/&lt;manual_id&gt;
+              </code>
+            </div>
+          </div>
+        </div>
       </div>
     )
   }
