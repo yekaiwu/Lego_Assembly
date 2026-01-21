@@ -1,32 +1,40 @@
-# Core Dependencies
-pdf2image==1.16.3
-PyMuPDF==1.23.8
-Pillow==10.1.0
-numpy==1.24.3
+# Minimal Backend Requirements for Railway Deployment
+# This file contains only the dependencies needed for the FastAPI backend API
+# Large ML dependencies (torch, SAM3, etc.) are excluded as they use cloud APIs
+
+# Core FastAPI Backend
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.6
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+
+# Vector Database
+chromadb>=0.4.22
+
+# LLM API Clients (LiteLLM)
+litellm>=1.30.0
+openai>=1.6.0
+google-generativeai>=0.3.0
 
 # API Clients
-requests==2.31.0
-openai==1.6.1  # For OpenAI-compatible API interfaces
-dashscope==1.14.1  # Alibaba Cloud DashScope for Qwen-VL
+requests>=2.31.0
+dashscope>=1.14.1
 
 # Data Processing
-python-dotenv==1.0.0
-pydantic==2.5.0
-jsonschema==4.20.0
+python-dotenv>=1.0.0
+aiofiles>=23.2.1
+jsonschema>=4.20.0
 
-# Part Database
-sqlite3  # Built-in, no install needed
+# Image Processing (for video/image uploads)
+Pillow>=10.0.0
+opencv-python-headless>=4.8.0  # Headless version (no GUI, smaller)
 
-# Caching & Storage
-diskcache==5.6.3
+# Video Processing (numpy required by opencv)
+numpy>=1.24.0
 
-# Logging & Monitoring
-loguru==0.7.2
+# Logging
+loguru>=0.7.2
 
-# Optional - Computer Vision Enhancement
-opencv-python==4.8.1.78
-
-# Note: Large ML dependencies (torch, torchvision, torchaudio, ultralytics, etc.)
-# have been removed for backend deployment. They are only needed for local
-# Phase 1 processing, not for the Railway backend API.
-
+# Caching
+diskcache>=5.6.3

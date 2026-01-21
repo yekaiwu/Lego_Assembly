@@ -1,0 +1,32 @@
+# Core Dependencies
+pdf2image==1.16.3
+PyMuPDF==1.23.8
+Pillow==10.1.0
+numpy==1.24.3
+
+# API Clients
+requests==2.31.0
+openai==1.6.1  # For OpenAI-compatible API interfaces
+dashscope==1.14.1  # Alibaba Cloud DashScope for Qwen-VL
+
+# Data Processing
+python-dotenv==1.0.0
+pydantic==2.5.0
+jsonschema==4.20.0
+
+# Part Database
+sqlite3  # Built-in, no install needed
+
+# Caching & Storage
+diskcache==5.6.3
+
+# Logging & Monitoring
+loguru==0.7.2
+
+# Optional - Computer Vision Enhancement
+opencv-python==4.8.1.78
+
+# Note: Large ML dependencies (torch, torchvision, torchaudio, ultralytics, etc.)
+# have been removed for backend deployment. They are only needed for local
+# Phase 1 processing, not for the Railway backend API.
+
