@@ -42,8 +42,25 @@ class Settings(BaseSettings):
 
     # Server
     api_host: str = "0.0.0.0"
-    api_port: int = 8000
+    api_port: int = 8000  # Default port for local development
     log_level: str = "INFO"
+    
+    @model_validator(mode='after')
+    def set_port_from_env(self):
+        """
+        Read PORT from environment variable (Railway provides this).
+        Falls back to default 8000 if not set (for local development).
+        """
+        # Railway sets PORT env var, but Pydantic Settings looks for API_PORT
+        # So we manually check for PORT and override if present
+        port_from_env = os.getenv("PORT")
+        if port_from_env:
+            try:
+                self.api_port = int(port_from_env)
+            except ValueError:
+                # Invalid PORT value, keep default
+                pass
+        return self
 
     # Data Paths (configurable via environment variables)
     output_dir: Path = Path("./output")  # Changed from ../output to ./output for project root execution
