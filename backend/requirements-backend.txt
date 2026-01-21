@@ -1,0 +1,40 @@
+# Minimal Backend Requirements for Railway Deployment
+# This file contains only the dependencies needed for the FastAPI backend API
+# Large ML dependencies (torch, SAM3, etc.) are excluded as they use cloud APIs
+
+# Core FastAPI Backend
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.6
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+
+# Vector Database
+chromadb>=0.4.22
+
+# LLM API Clients (LiteLLM)
+litellm>=1.30.0
+openai>=1.6.0
+google-generativeai>=0.3.0
+
+# API Clients
+requests>=2.31.0
+dashscope>=1.14.1
+
+# Data Processing
+python-dotenv>=1.0.0
+aiofiles>=23.2.1
+jsonschema>=4.20.0
+
+# Image Processing (for video/image uploads)
+Pillow>=10.0.0
+opencv-python-headless>=4.8.0  # Headless version (no GUI, smaller)
+
+# Video Processing (numpy required by opencv)
+numpy>=1.24.0
+
+# Logging
+loguru>=0.7.2
+
+# Caching
+diskcache>=5.6.3
