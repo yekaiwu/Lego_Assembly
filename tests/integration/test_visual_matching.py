@@ -1,13 +1,14 @@
 """
-Test script for visual matching with SAM.
+Integration tests for visual matching with SAM3.
 
 This script demonstrates and tests the visual matching pipeline:
-1. SAM segmentation of user assembly
+1. SAM3 segmentation of user assembly
 2. ORB feature matching against graph images
 3. Combined text + visual matching
 
 Usage:
-    python -m backend.app.vision.test_visual_matching
+    pytest tests/integration/test_visual_matching.py -v
+    python -m tests.integration.test_visual_matching
 """
 
 import sys
@@ -15,8 +16,9 @@ from pathlib import Path
 from loguru import logger
 
 # Add project root to path
-project_root = Path(__file__).parent.parent.parent.parent
+project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
+sys.path.insert(0, str(project_root / "backend"))
 
 
 def test_visual_matcher_basic():
