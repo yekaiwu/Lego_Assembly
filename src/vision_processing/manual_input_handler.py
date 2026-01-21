@@ -3,15 +3,13 @@ Manual Input Handler: Processes LEGO instruction manuals (PDF/images).
 Handles page extraction, step segmentation, and batch processing.
 """
 
-# Optional PyMuPDF import (not available on Railway backend)
+# PyMuPDF import (required for PDF processing)
 try:
     import fitz  # PyMuPDF
     HAS_PYMUPDF = True
 except ImportError:
     HAS_PYMUPDF = False
     fitz = None  # Prevent NameError
-
-from pdf2image import convert_from_path
 from PIL import Image
 from pathlib import Path
 from typing import List, Tuple, Optional, Union
@@ -82,26 +80,10 @@ class ManualInputHandler:
                 return page_paths
             
             except Exception as e:
-                logger.warning(f"PyMuPDF failed: {e}. Trying pdf2image...")
+                logger.error(f"PyMuPDF failed: {e}")
+                raise RuntimeError(f"PDF extraction failed: {e}. PyMuPDF is required for PDF processing.")
         else:
-            logger.info("PyMuPDF not available, using pdf2image...")
-        
-        # Fallback: pdf2image
-        try:
-            images = convert_from_path(pdf_path, dpi=300)
-            page_paths = []
-            
-            for i, img in enumerate(images):
-                output_path = self.output_dir / f"page_{i + 1:03d}.png"
-                img.save(str(output_path), "PNG")
-                page_paths.append(str(output_path))
-            
-            logger.info(f"Extracted {len(page_paths)} pages using pdf2image")
-            return page_paths
-        
-        except Exception as e2:
-            logger.error(f"PDF extraction failed: {e2}")
-            raise
+            raise RuntimeError("PyMuPDF is not installed. Please install it with: pip install PyMuPDF")
     
     def _process_image_directory(self, dir_path: Path) -> List[str]:
         """
