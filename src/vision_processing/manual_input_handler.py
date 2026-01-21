@@ -3,7 +3,14 @@ Manual Input Handler: Processes LEGO instruction manuals (PDF/images).
 Handles page extraction, step segmentation, and batch processing.
 """
 
-import fitz  # PyMuPDF
+# Optional PyMuPDF import (not available on Railway backend)
+try:
+    import fitz  # PyMuPDF
+    HAS_PYMUPDF = True
+except ImportError:
+    HAS_PYMUPDF = False
+    fitz = None  # Prevent NameError
+
 from pdf2image import convert_from_path
 from PIL import Image
 from pathlib import Path
@@ -54,44 +61,47 @@ class ManualInputHandler:
         """
         logger.info(f"Processing PDF: {pdf_path}")
         
-        try:
-            # Method 1: PyMuPDF (faster, better quality)
-            doc = fitz.open(pdf_path)
-            page_paths = []
-            
-            for page_num in range(len(doc)):
-                page = doc[page_num]
-                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # 2x zoom for quality
-                
-                output_path = self.output_dir / f"page_{page_num + 1:03d}.png"
-                pix.save(str(output_path))
-                page_paths.append(str(output_path))
-                
-                logger.debug(f"Extracted page {page_num + 1}/{len(doc)}")
-            
-            doc.close()
-            logger.info(f"Extracted {len(page_paths)} pages from PDF")
-            return page_paths
-        
-        except Exception as e:
-            logger.warning(f"PyMuPDF failed: {e}. Trying pdf2image...")
-            
-            # Fallback: pdf2image
+        # Try PyMuPDF first if available (faster, better quality)
+        if HAS_PYMUPDF:
             try:
-                images = convert_from_path(pdf_path, dpi=300)
+                doc = fitz.open(pdf_path)
                 page_paths = []
                 
-                for i, img in enumerate(images):
-                    output_path = self.output_dir / f"page_{i + 1:03d}.png"
-                    img.save(str(output_path), "PNG")
+                for page_num in range(len(doc)):
+                    page = doc[page_num]
+                    pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # 2x zoom for quality
+                    
+                    output_path = self.output_dir / f"page_{page_num + 1:03d}.png"
+                    pix.save(str(output_path))
                     page_paths.append(str(output_path))
+                    
+                    logger.debug(f"Extracted page {page_num + 1}/{len(doc)}")
                 
-                logger.info(f"Extracted {len(page_paths)} pages using pdf2image")
+                doc.close()
+                logger.info(f"Extracted {len(page_paths)} pages from PDF using PyMuPDF")
                 return page_paths
             
-            except Exception as e2:
-                logger.error(f"PDF extraction failed: {e2}")
-                raise
+            except Exception as e:
+                logger.warning(f"PyMuPDF failed: {e}. Trying pdf2image...")
+        else:
+            logger.info("PyMuPDF not available, using pdf2image...")
+        
+        # Fallback: pdf2image
+        try:
+            images = convert_from_path(pdf_path, dpi=300)
+            page_paths = []
+            
+            for i, img in enumerate(images):
+                output_path = self.output_dir / f"page_{i + 1:03d}.png"
+                img.save(str(output_path), "PNG")
+                page_paths.append(str(output_path))
+            
+            logger.info(f"Extracted {len(page_paths)} pages using pdf2image")
+            return page_paths
+        
+        except Exception as e2:
+            logger.error(f"PDF extraction failed: {e2}")
+            raise
     
     def _process_image_directory(self, dir_path: Path) -> List[str]:
         """
