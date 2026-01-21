@@ -59,7 +59,7 @@ class AnalysisResults(BaseModel):
     """Complete analysis results."""
     analysis_id: str
     status: str = "completed"
-    results: Dict[str, Any]
+    results: Optional[Dict[str, Any]] = None
     processing_time_sec: Optional[float] = None
 
 

@@ -60,8 +60,8 @@ class VideoAnalyzer:
         self,
         video_path: str,
         manual_id: str,
-        extracted_data_path: str,
-        dependencies_path: Optional[str] = None,
+        dependencies_path: str,
+        extracted_data_path: Optional[str] = None,
         reference_images: Optional[List[str]] = None
     ) -> Dict:
         """
@@ -70,8 +70,8 @@ class VideoAnalyzer:
         Args:
             video_path: Path to video file
             manual_id: Manual ID
-            extracted_data_path: Path to extracted.json from manual processing
-            dependencies_path: Optional path to dependencies.json
+            dependencies_path: Path to dependencies.json from manual processing
+            extracted_data_path: Optional path to extracted.json (deprecated, use dependencies_path)
             reference_images: Optional list of paths to reference step images
 
         Returns:
@@ -81,8 +81,8 @@ class VideoAnalyzer:
 
         # Load manual context
         manual_context = self._load_manual_context(
-            extracted_data_path,
-            dependencies_path
+            dependencies_path,
+            extracted_data_path
         )
 
         # Extract video metadata
@@ -154,7 +154,7 @@ class VideoAnalyzer:
                 "model_used": self.model_name,
                 "context_provided": {
                     "manual_steps": True,
-                    "dependencies": dependencies_path is not None,
+                    "dependencies": 'dependencies' in manual_context,
                     "reference_images": len(uploaded_images) > 0
                 }
             }
@@ -172,27 +172,52 @@ class VideoAnalyzer:
 
     def _load_manual_context(
         self,
-        extracted_path: str,
-        dependencies_path: Optional[str] = None
+        dependencies_path: str,
+        extracted_path: Optional[str] = None
     ) -> Dict:
         """
-        Load manual context from extracted JSON files.
+        Load manual context from dependencies.json.
 
         Args:
-            extracted_path: Path to extracted.json
-            dependencies_path: Optional path to dependencies.json
+            dependencies_path: Path to dependencies.json
+            extracted_path: Optional path to extracted.json (fallback, deprecated)
 
         Returns:
             Dictionary with steps, dependencies, and colors
         """
-        logger.info(f"Loading manual context from {extracted_path}")
+        logger.info(f"Loading manual context from {dependencies_path}")
 
-        with open(extracted_path, 'r') as f:
-            extracted_data = json.load(f)
+        # Load from dependencies.json (preferred)
+        if Path(dependencies_path).exists():
+            with open(dependencies_path, 'r') as f:
+                dependencies_data = json.load(f)
 
-        context = {
-            'steps': extracted_data if isinstance(extracted_data, list) else []
-        }
+            # Extract steps from nodes
+            nodes = dependencies_data.get('nodes', {})
+            steps = [nodes[str(i)] for i in sorted([int(k) for k in nodes.keys()])]
+
+            context = {
+                'steps': steps,
+                'dependencies': dependencies_data
+            }
+
+            logger.info(f"Loaded {len(steps)} steps from dependencies.json")
+
+        # Fallback to extracted.json if dependencies.json doesn't exist
+        elif extracted_path and Path(extracted_path).exists():
+            logger.warning(f"dependencies.json not found, falling back to {extracted_path}")
+            with open(extracted_path, 'r') as f:
+                extracted_data = json.load(f)
+
+            context = {
+                'steps': extracted_data if isinstance(extracted_data, list) else []
+            }
+
+        else:
+            raise FileNotFoundError(
+                f"Neither dependencies.json ({dependencies_path}) nor "
+                f"extracted.json ({extracted_path}) found"
+            )
 
         # Extract colors from parts
         colors = set()
@@ -203,11 +228,6 @@ class VideoAnalyzer:
                     colors.add(color)
 
         context['colors'] = list(colors)
-
-        # Load dependencies if provided
-        if dependencies_path and Path(dependencies_path).exists():
-            with open(dependencies_path, 'r') as f:
-                context['dependencies'] = json.load(f)
 
         logger.info(
             f"Loaded context: {len(context['steps'])} steps, "

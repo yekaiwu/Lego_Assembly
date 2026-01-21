@@ -1288,8 +1288,8 @@ async def run_video_analysis(
         results = analyzer.analyze_video(
             video_path=video_path,
             manual_id=manual_id,
-            extracted_data_path=extracted_path,
             dependencies_path=dependencies_path,
+            extracted_data_path=extracted_path,
             reference_images=reference_images
         )
 
@@ -1404,10 +1404,10 @@ async def analyze_video(
 @app.get("/api/video/analysis/{analysis_id}", response_model=AnalysisResults)
 async def get_analysis_status(analysis_id: str):
     """
-    Get status of video analysis.
+    Get status of video analysis or overlay generation.
 
     Args:
-        analysis_id: Analysis job ID
+        analysis_id: Analysis job ID or overlay job ID
 
     Returns:
         Analysis status or results if complete
@@ -1418,22 +1418,43 @@ async def get_analysis_status(analysis_id: str):
         if not task_info:
             raise HTTPException(
                 status_code=404,
-                detail=f"Analysis {analysis_id} not found"
+                detail=f"Task {analysis_id} not found"
             )
+
+        # Handle overlay tasks differently
+        is_overlay_task = analysis_id.startswith("overlay_")
 
         if task_info["status"] == TaskStatus.COMPLETED:
-            # Load results
-            manual_id = task_info["metadata"]["manual_id"]
-            results = analysis_storage.load_analysis_results(manual_id, analysis_id)
+            if is_overlay_task:
+                # For overlay tasks, return the task metadata as results
+                return AnalysisResults(
+                    analysis_id=analysis_id,
+                    status="completed",
+                    results={
+                        "type": "overlay",
+                        "analysis_id": task_info["metadata"].get("analysis_id"),
+                        "manual_id": task_info["metadata"].get("manual_id")
+                    },
+                    processing_time_sec=task_info.get("duration_sec")
+                )
+            else:
+                # For analysis tasks, load results file
+                manual_id = task_info["metadata"]["manual_id"]
+                results = analysis_storage.load_analysis_results(manual_id, analysis_id)
 
-            return AnalysisResults(
-                analysis_id=analysis_id,
-                status="completed",
-                results=results,
-                processing_time_sec=task_info.get("duration_sec")
-            )
+                if results is None:
+                    logger.warning(f"Results file not found for completed analysis {analysis_id}")
+                    # Return with empty results if file missing
+                    results = {}
+
+                return AnalysisResults(
+                    analysis_id=analysis_id,
+                    status="completed",
+                    results=results,
+                    processing_time_sec=task_info.get("duration_sec")
+                )
         else:
-            # Return status
+            # Return status for in-progress tasks
             return AnalysisResults(
                 analysis_id=analysis_id,
                 status=task_info["status"],

@@ -22,8 +22,8 @@ def get_assembly_video_prompt(
     using the manual's extracted steps as context for better accuracy.
 
     Args:
-        manual_steps: List of step dictionaries from extracted.json
-        dependencies: Optional step dependency graph from dependencies.json
+        manual_steps: List of step dictionaries from dependencies.json
+        dependencies: Optional step dependency graph (full dependencies.json data)
         expected_colors: Optional list of LEGO colors expected in this build
 
     Returns:
