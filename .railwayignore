@@ -1,0 +1,116 @@
+# Railway ignore file - excludes files from deployment image
+
+# Frontend (deployed separately on Vercel)
+frontend/
+node_modules/
+
+# Tests (not needed in production)
+tests/
+*.test.py
+*_test.py
+pytest.ini
+.pytest_cache/
+
+# Documentation (not needed for runtime)
+*.md
+QUICK_START.md
+README.md
+VIDEO_ANALYSIS.md
+TESTING.md
+
+# Output files (should be in persistent storage, not in image)
+output/
+*.log
+*.json
+*.txt
+
+# Cache and temporary files
+cache/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.cache
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+env/
+ENV/
+
+# Model caches (HuggingFace, etc.)
+.huggingface/
+.cache/
+~/.cache/
+transformers_cache/
+
+# Data files (should be in persistent storage)
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+chroma_db/
+backend/chroma_db/
+backend/cache/
+uploads/
+backend/uploads/
+
+# Video files (user uploads - should be in persistent storage, not in image)
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.webm
+backend/uploads/videos/
+uploads/videos/
+
+# Examples and external code
+examples/
+external/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+wheels/
+
+# Environment files (should be set in Railway, not committed)
+.env
+.env.local
+.env.*.local
+
+# Git
+.git/
+.gitignore
+
+# Scripts (utility scripts not needed for runtime)
+scripts/
+clean_all.sh
+start_backend.sh
+start_frontend.sh
+ingest_manual.sh
+fix_graph_images.py
+visualize_graph.py
+huggingface_login.py
+cache_manager.py
+reset_chroma.py
+
+# Lock files (not needed, dependencies installed from requirements)
+uv.lock
+package-lock.json
+
+# Jupyter notebooks
+*.ipynb
+.ipynb_checkpoints/

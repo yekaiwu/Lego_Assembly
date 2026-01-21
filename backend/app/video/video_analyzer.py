@@ -103,9 +103,10 @@ class VideoAnalyzer:
                     uploaded_images.append(img_file)
 
         # Build prompt with manual context
+        # Note: Don't pass full dependencies graph to avoid bloating prompt
         prompt = get_assembly_video_prompt(
             manual_steps=manual_context['steps'],
-            dependencies=manual_context.get('dependencies'),
+            dependencies=None,  # Skip dependency graph to keep prompt focused
             expected_colors=manual_context.get('colors')
         )
 
@@ -154,7 +155,7 @@ class VideoAnalyzer:
                 "model_used": self.model_name,
                 "context_provided": {
                     "manual_steps": True,
-                    "dependencies": 'dependencies' in manual_context,
+                    "dependencies": False,  # Not passed to VLM to keep prompt focused
                     "reference_images": len(uploaded_images) > 0
                 }
             }

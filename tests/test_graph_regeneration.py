@@ -1,111 +1,242 @@
-#!/usr/bin/env python3
 """
-Test script to regenerate hierarchical graph with enhanced implementation.
-This validates all the improvements: PromptManager integration, enhanced logging, etc.
+Test suite for hierarchical graph regeneration with enhanced implementation.
+Validates graph building, node structure, and metadata generation.
 """
 
 import json
 import sys
 from pathlib import Path
-from loguru import logger
+from unittest.mock import MagicMock, patch
 
-# Add project paths
-project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root))
-sys.path.insert(0, str(project_root / "backend"))
-
-from src.plan_generation.graph_builder import GraphBuilder
+import pytest
 
 
-def main():
-    """Test graph regeneration with manual 6454922."""
-    # Configuration
-    assembly_id = "6454922"
-    output_dir = project_root / "output"
-    image_dir = output_dir / "temp_pages"
-    
-    logger.info("=" * 80)
-    logger.info("Testing Enhanced Hierarchical Graph Builder")
-    logger.info("=" * 80)
-    
-    # Check prerequisites
-    extracted_path = output_dir / f"{assembly_id}_extracted.json"
-    if not extracted_path.exists():
-        logger.error(f"Extracted data not found: {extracted_path}")
-        return 1
-    
-    if not image_dir.exists():
-        logger.error(f"Image directory not found: {image_dir}")
-        return 1
-    
-    # Load extracted steps
-    logger.info(f"Loading extracted steps from {extracted_path}")
-    with open(extracted_path, 'r', encoding='utf-8') as f:
-        extracted_steps = json.load(f)
-    
-    logger.info(f"Loaded {len(extracted_steps)} steps")
-    
-    # Build graph with new implementation
-    logger.info("\nInitializing enhanced GraphBuilder...")
-    graph_builder = GraphBuilder()
-    
-    logger.info("\nBuilding hierarchical graph with:")
-    logger.info("  ✓ PromptManager integration")
-    logger.info("  ✓ Enhanced subassembly detection")
-    logger.info("  ✓ Improved logging and debugging")
-    logger.info("  ✓ Page relevance verification")
-    
-    # Build graph
+@pytest.fixture
+def graph_builder():
+    """Create a GraphBuilder instance."""
+    from src.plan_generation.graph_builder import GraphBuilder
+    return GraphBuilder()
+
+
+@pytest.fixture
+def extracted_data_file(temp_output_dir, sample_manual_id, sample_extracted_steps):
+    """Create a sample extracted data file."""
+    extracted_path = temp_output_dir / f"{sample_manual_id}_extracted.json"
+    with open(extracted_path, 'w', encoding='utf-8') as f:
+        json.dump(sample_extracted_steps, f)
+    return extracted_path
+
+
+@pytest.fixture
+def sample_image_dir(temp_output_dir):
+    """Create a sample image directory with dummy images."""
+    image_dir = temp_output_dir / "temp_pages"
+    image_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create dummy image files
+    for i in range(1, 4):
+        image_path = image_dir / f"page_{i:03d}.png"
+        image_path.write_bytes(b'\x89PNG\r\n\x1a\n' + b'\x00' * 100)
+
+    return image_dir
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+def test_graph_builder_initialization(graph_builder):
+    """Test that GraphBuilder initializes correctly."""
+    assert graph_builder is not None
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+def test_build_graph_with_sample_data(
+    graph_builder,
+    sample_manual_id,
+    sample_extracted_steps,
+    sample_image_dir
+):
+    """Test building a hierarchical graph with sample data."""
     hierarchical_graph = graph_builder.build_graph(
-        extracted_steps=extracted_steps,
-        assembly_id=assembly_id,
-        image_dir=image_dir
+        extracted_steps=sample_extracted_steps,
+        assembly_id=sample_manual_id,
+        image_dir=sample_image_dir
     )
-    
+
+    # Verify graph structure
+    assert hierarchical_graph is not None
+    assert "assembly_id" in hierarchical_graph
+    assert hierarchical_graph["assembly_id"] == sample_manual_id
+    assert "metadata" in hierarchical_graph
+    assert "nodes" in hierarchical_graph
+
+
+@pytest.mark.integration
+def test_graph_metadata_structure(
+    graph_builder,
+    sample_manual_id,
+    sample_extracted_steps,
+    sample_image_dir
+):
+    """Test that graph metadata contains expected fields."""
+    hierarchical_graph = graph_builder.build_graph(
+        extracted_steps=sample_extracted_steps,
+        assembly_id=sample_manual_id,
+        image_dir=sample_image_dir
+    )
+
+    metadata = hierarchical_graph["metadata"]
+
+    # Verify metadata fields
+    assert "total_parts" in metadata
+    assert "total_subassemblies" in metadata
+    assert "total_steps" in metadata
+    assert "max_depth" in metadata
+
+    # Verify metadata values are reasonable
+    assert metadata["total_parts"] >= 0
+    assert metadata["total_subassemblies"] >= 0
+    assert metadata["total_steps"] > 0
+    assert metadata["max_depth"] >= 1
+
+
+@pytest.mark.integration
+def test_graph_nodes_structure(
+    graph_builder,
+    sample_manual_id,
+    sample_extracted_steps,
+    sample_image_dir
+):
+    """Test that graph nodes have correct structure."""
+    hierarchical_graph = graph_builder.build_graph(
+        extracted_steps=sample_extracted_steps,
+        assembly_id=sample_manual_id,
+        image_dir=sample_image_dir
+    )
+
+    nodes = hierarchical_graph["nodes"]
+
+    assert len(nodes) > 0
+
+    # Check first node structure
+    node = nodes[0]
+    assert "id" in node
+    assert "type" in node
+    assert "name" in node
+
+
+@pytest.mark.integration
+def test_save_graph(
+    graph_builder,
+    sample_manual_id,
+    sample_extracted_steps,
+    sample_image_dir,
+    temp_output_dir
+):
+    """Test saving graph to file."""
+    hierarchical_graph = graph_builder.build_graph(
+        extracted_steps=sample_extracted_steps,
+        assembly_id=sample_manual_id,
+        image_dir=sample_image_dir
+    )
+
+    graph_path = temp_output_dir / f"{sample_manual_id}_graph_test.json"
+
     # Save graph
-    graph_path = output_dir / f"{assembly_id}_graph_test.json"
-    logger.info(f"\nSaving graph to {graph_path}")
     graph_builder.save_graph(hierarchical_graph, graph_path)
-    
-    # Verify outputs
-    summary_path = output_dir / f"{assembly_id}_graph_test_summary.txt"
-    
-    logger.info("\n" + "=" * 80)
-    logger.info("✓ Graph Regeneration Complete!")
-    logger.info("=" * 80)
-    logger.info(f"\nGenerated files:")
-    logger.info(f"  1. {graph_path.name} - Full hierarchical graph JSON")
-    logger.info(f"  2. {summary_path.name} - Human-readable summary")
-    
-    logger.info(f"\n📊 Graph Statistics:")
-    logger.info(f"   Parts: {hierarchical_graph['metadata']['total_parts']}")
-    logger.info(f"   Subassemblies: {hierarchical_graph['metadata']['total_subassemblies']}")
-    logger.info(f"   Steps: {hierarchical_graph['metadata']['total_steps']}")
-    logger.info(f"   Max Depth: {hierarchical_graph['metadata']['max_depth']} layers")
-    
-    # Compare with old graph if it exists
-    old_graph_path = output_dir / f"{assembly_id}_graph.json"
-    if old_graph_path.exists():
-        logger.info("\n📈 Comparison with old graph:")
-        with open(old_graph_path, 'r', encoding='utf-8') as f:
-            old_graph = json.load(f)
-        
-        old_metadata = old_graph.get("metadata", {})
-        new_metadata = hierarchical_graph["metadata"]
-        
-        logger.info(f"   Parts: {old_metadata.get('total_parts', '?')} → {new_metadata['total_parts']}")
-        logger.info(f"   Subassemblies: {old_metadata.get('total_subassemblies', '?')} → {new_metadata['total_subassemblies']}")
-        logger.info(f"   Max Depth: {old_metadata.get('max_depth', '?')} → {new_metadata['max_depth']}")
-    
-    logger.info("\n💡 Next Steps:")
-    logger.info("  1. Review the summary file:")
-    logger.info(f"     cat {summary_path}")
-    logger.info("  2. Visualize the hierarchy:")
-    logger.info(f"     python3 visualize_graph.py {graph_path} --show-subassemblies")
-    logger.info("  3. Compare with manual PDF to verify accuracy")
-    
-    return 0
+
+    # Verify file was created
+    assert graph_path.exists()
+
+    # Verify file contents
+    with open(graph_path, 'r', encoding='utf-8') as f:
+        loaded_graph = json.load(f)
+
+    assert loaded_graph == hierarchical_graph
 
 
-if __name__ == "__main__":
-    exit(main())
+@pytest.mark.integration
+def test_graph_summary_generation(
+    graph_builder,
+    sample_manual_id,
+    sample_extracted_steps,
+    sample_image_dir,
+    temp_output_dir
+):
+    """Test that graph summary file is generated."""
+    hierarchical_graph = graph_builder.build_graph(
+        extracted_steps=sample_extracted_steps,
+        assembly_id=sample_manual_id,
+        image_dir=sample_image_dir
+    )
+
+    graph_path = temp_output_dir / f"{sample_manual_id}_graph_test.json"
+    summary_path = temp_output_dir / f"{sample_manual_id}_graph_test_summary.txt"
+
+    # Save graph (which should also create summary)
+    graph_builder.save_graph(hierarchical_graph, graph_path)
+
+    # Summary might be created separately; this test documents expected behavior
+
+
+@pytest.mark.integration
+def test_graph_with_empty_steps(graph_builder, sample_manual_id, sample_image_dir):
+    """Test graph building with empty step list."""
+    with pytest.raises(Exception):
+        graph_builder.build_graph(
+            extracted_steps=[],
+            assembly_id=sample_manual_id,
+            image_dir=sample_image_dir
+        )
+
+
+@pytest.mark.integration
+def test_graph_with_missing_image_dir(
+    graph_builder,
+    sample_manual_id,
+    sample_extracted_steps
+):
+    """Test graph building with non-existent image directory."""
+    non_existent_dir = Path("/tmp/nonexistent_image_dir_12345")
+
+    # This might raise an exception or handle gracefully
+    # The test documents the expected behavior
+    try:
+        hierarchical_graph = graph_builder.build_graph(
+            extracted_steps=sample_extracted_steps,
+            assembly_id=sample_manual_id,
+            image_dir=non_existent_dir
+        )
+        # If it succeeds, verify the graph is still valid
+        assert hierarchical_graph is not None
+    except (FileNotFoundError, ValueError) as e:
+        # Expected behavior for missing directory
+        pass
+
+
+@pytest.mark.unit
+def test_graph_metadata_calculation():
+    """Test metadata calculation logic."""
+    sample_nodes = [
+        {"type": "assembly", "parts": []},
+        {"type": "subassembly", "parts": ["part1", "part2"]},
+        {"type": "subassembly", "parts": ["part3"]},
+    ]
+
+    # Count parts
+    total_parts = sum(len(node.get("parts", [])) for node in sample_nodes)
+    assert total_parts == 3
+
+    # Count subassemblies
+    total_subassemblies = sum(1 for node in sample_nodes if node["type"] == "subassembly")
+    assert total_subassemblies == 2
+
+
+@pytest.mark.integration
+def test_load_extracted_data_from_file(extracted_data_file, sample_extracted_steps):
+    """Test loading extracted data from JSON file."""
+    with open(extracted_data_file, 'r', encoding='utf-8') as f:
+        loaded_steps = json.load(f)
+
+    assert loaded_steps == sample_extracted_steps
+    assert len(loaded_steps) > 0

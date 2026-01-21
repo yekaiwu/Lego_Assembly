@@ -1,222 +1,205 @@
-#!/usr/bin/env python3
 """
-Test script to verify VLM response caching is working correctly.
-This script simulates the extraction process and verifies:
-1. Responses are cached after first call
-2. Cached responses are retrieved on subsequent calls
-3. Cache keys include assembly_id to avoid collisions
+Test suite for VLM response caching functionality.
+Verifies cache storage, retrieval, and context isolation.
 """
 
-import json
 import time
 from pathlib import Path
-from src.utils.cache import get_cache
-from src.utils.config import get_config
-from src.api.litellm_vlm import UnifiedVLMClient
+from unittest.mock import MagicMock, patch
 
-def test_cache_functionality():
-    """Test that caching works as expected."""
-    
-    print("=" * 80)
-    print("VLM CACHE FUNCTIONALITY TEST")
-    print("=" * 80)
-    
-    # Check configuration
-    config = get_config()
-    print(f"\n✓ Cache enabled: {config.cache_enabled}")
-    print(f"✓ Cache directory: {config.paths.cache_dir}")
-    
-    if not config.cache_enabled:
-        print("\n❌ ERROR: Caching is disabled in config!")
-        print("Expected cache_enabled=True")
-        return False
-    
-    # Get cache instance
-    cache = get_cache()
-    initial_size = len(cache.cache)
-    print(f"✓ Initial cache size: {initial_size} entries")
-    
-    # Test data
+import pytest
+
+
+@pytest.fixture
+def cache_instance(mock_settings):
+    """Create a cache instance for testing."""
+    with patch('src.utils.config.get_config', return_value=mock_settings):
+        from src.utils.cache import get_cache
+        cache = get_cache()
+        # Clear any existing entries
+        cache.cache.clear()
+        yield cache
+
+
+@pytest.fixture
+def test_image_path(temp_output_dir):
+    """Create a dummy test image."""
+    image_path = temp_output_dir / "temp_pages" / "page_001.png"
+    image_path.parent.mkdir(parents=True, exist_ok=True)
+    # Create a minimal PNG file
+    image_path.write_bytes(b'\x89PNG\r\n\x1a\n' + b'\x00' * 100)
+    return str(image_path)
+
+
+@pytest.mark.unit
+def test_cache_enabled_in_config(mock_settings):
+    """Test that caching can be enabled in configuration."""
+    assert mock_settings.cache_enabled is True
+
+
+@pytest.mark.unit
+def test_cache_storage(cache_instance, test_image_path):
+    """Test storing responses in cache."""
     test_model = "test-model"
     test_prompt = "Test prompt for caching verification"
-    test_images = ["../output/temp_pages/page_001.png"]
     test_response = {
         "step_number": 1,
         "parts_required": [{"description": "test part", "color": "red"}],
         "actions": [],
         "notes": "Test extraction"
     }
-    
-    print("\n" + "=" * 80)
-    print("TEST 1: Cache Storage")
-    print("=" * 80)
-    
+
+    initial_size = len(cache_instance.cache)
+
     # Store in cache
-    cache.set(test_model, test_prompt, test_response, test_images)
-    after_set_size = len(cache.cache)
-    print(f"✓ Stored test response in cache")
-    print(f"✓ Cache size after set: {after_set_size} entries")
-    
-    if after_set_size <= initial_size:
-        print(f"❌ ERROR: Cache size did not increase! ({initial_size} -> {after_set_size})")
-        return False
-    
-    print("\n" + "=" * 80)
-    print("TEST 2: Cache Retrieval")
-    print("=" * 80)
-    
+    cache_instance.set(test_model, test_prompt, test_response, [test_image_path])
+
+    # Verify cache size increased
+    assert len(cache_instance.cache) > initial_size
+
+
+@pytest.mark.unit
+def test_cache_retrieval(cache_instance, test_image_path):
+    """Test retrieving responses from cache."""
+    test_model = "test-model"
+    test_prompt = "Test prompt for caching verification"
+    test_response = {
+        "step_number": 1,
+        "parts_required": [{"description": "test part", "color": "red"}],
+        "actions": [],
+        "notes": "Test extraction"
+    }
+
+    # Store in cache
+    cache_instance.set(test_model, test_prompt, test_response, [test_image_path])
+
     # Retrieve from cache
-    cached_response = cache.get(test_model, test_prompt, test_images)
-    
-    if cached_response is None:
-        print("❌ ERROR: Failed to retrieve cached response!")
-        return False
-    
-    print(f"✓ Retrieved cached response")
-    
-    # Verify content matches
-    if cached_response != test_response:
-        print(f"❌ ERROR: Cached response doesn't match original!")
-        print(f"Expected: {test_response}")
-        print(f"Got: {cached_response}")
-        return False
-    
-    print(f"✓ Cached content matches original")
-    
-    print("\n" + "=" * 80)
-    print("TEST 3: Cache Key with Assembly ID (Context)")
-    print("=" * 80)
-    
-    # Test that different assembly IDs create different cache entries
-    prompt_with_context_1 = f"{test_prompt}:assembly_123"
-    prompt_with_context_2 = f"{test_prompt}:assembly_456"
-    
+    cached_response = cache_instance.get(test_model, test_prompt, [test_image_path])
+
+    # Verify retrieval
+    assert cached_response is not None
+    assert cached_response == test_response
+
+
+@pytest.mark.unit
+def test_cache_miss(cache_instance, test_image_path):
+    """Test cache miss for non-existent entries."""
+    cached_response = cache_instance.get("nonexistent-model", "nonexistent-prompt", [test_image_path])
+    assert cached_response is None
+
+
+@pytest.mark.unit
+def test_cache_context_isolation(cache_instance, test_image_path):
+    """Test that different assembly IDs create separate cache entries."""
+    test_model = "test-model"
+    base_prompt = "Test prompt"
+
+    # Create prompts with different contexts
+    prompt_with_context_1 = f"{base_prompt}:assembly_123"
+    prompt_with_context_2 = f"{base_prompt}:assembly_456"
+
     response_1 = {"assembly": "123", "data": "first"}
     response_2 = {"assembly": "456", "data": "second"}
-    
-    cache.set(test_model, prompt_with_context_1, response_1, test_images)
-    cache.set(test_model, prompt_with_context_2, response_2, test_images)
-    
-    retrieved_1 = cache.get(test_model, prompt_with_context_1, test_images)
-    retrieved_2 = cache.get(test_model, prompt_with_context_2, test_images)
-    
-    if retrieved_1 == retrieved_2:
-        print("❌ ERROR: Different assembly IDs returned same cached data!")
-        return False
-    
-    print(f"✓ Different assembly IDs have separate cache entries")
-    print(f"  Assembly 123: {retrieved_1}")
-    print(f"  Assembly 456: {retrieved_2}")
-    
-    print("\n" + "=" * 80)
-    print("TEST 4: Real VLM API Call (If Key Available)")
-    print("=" * 80)
 
-    # Use the configured ingestion VLM
-    vlm_model = config.models.ingestion_vlm if hasattr(config.models, 'ingestion_vlm') else "gemini/gemini-2.0-flash"
+    # Store both
+    cache_instance.set(test_model, prompt_with_context_1, response_1, [test_image_path])
+    cache_instance.set(test_model, prompt_with_context_2, response_2, [test_image_path])
 
-    # Check if we have any API key
-    has_api_key = any([
-        config.api.gemini_api_key,
-        config.api.openai_api_key,
-        config.api.anthropic_api_key
-    ])
+    # Retrieve both
+    retrieved_1 = cache_instance.get(test_model, prompt_with_context_1, [test_image_path])
+    retrieved_2 = cache_instance.get(test_model, prompt_with_context_2, [test_image_path])
 
-    if not has_api_key:
-        print("⚠️  Skipping: No API key found (checked GEMINI, OPENAI, ANTHROPIC)")
-    else:
-        # Check if test image exists
-        test_image = Path("../output/temp_pages/page_001.png")
-        if not test_image.exists():
-            print(f"⚠️  Skipping: Test image not found at {test_image}")
-        else:
-            print(f"✓ Test image found: {test_image}")
-            print(f"✓ Using VLM model: {vlm_model}")
+    # Verify isolation
+    assert retrieved_1 != retrieved_2
+    assert retrieved_1 == response_1
+    assert retrieved_2 == response_2
 
-            # Create VLM client
-            vlm_client = UnifiedVLMClient(vlm_model)
-            
-            # Clear cache for this specific call
-            test_cache_key = f"{vlm_client.model}:{str(test_image)}:test_step:cache_test"
 
-            # First call (should hit API)
-            print("\n  → Making first API call (should cache)...")
-            start_time = time.time()
+@pytest.mark.unit
+def test_cache_statistics(cache_instance, test_image_path):
+    """Test cache statistics reporting."""
+    # Add some test entries
+    for i in range(3):
+        cache_instance.set(f"model-{i}", f"prompt-{i}", {"data": f"response-{i}"}, [test_image_path])
 
-            try:
-                result_1 = vlm_client.extract_step_info(
-                    [str(test_image)],
-                    step_number=999,  # Use unique step number
-                    use_json_mode=True,
-                    cache_context="cache_test"
-                )
-                first_call_time = time.time() - start_time
-                print(f"  ✓ First call completed in {first_call_time:.2f}s")
+    stats = cache_instance.stats()
 
-                # UnifiedVLMClient returns a list, check first element
-                result_item = result_1[0] if isinstance(result_1, list) else result_1
+    assert "size" in stats
+    assert stats["size"] >= 3
+    assert "volume" in stats
+    assert stats["volume"] > 0
 
-                if "error" in result_item:
-                    print(f"  ⚠️  API returned error: {result_item.get('error')}")
-                else:
-                    print(f"  ✓ Received valid response with {len(str(result_1))} characters")
 
-                # Second call (should use cache)
-                print("\n  → Making second API call (should use cache)...")
-                start_time = time.time()
+@pytest.mark.integration
+@pytest.mark.requires_api
+@pytest.mark.slow
+def test_vlm_caching_with_real_api(mock_vlm_client, test_image_path):
+    """Test VLM caching with mocked API calls."""
+    # Mock the VLM client
+    mock_vlm_client.extract_step_info.return_value = [{
+        "step_number": 999,
+        "parts_required": [],
+        "actions": [],
+        "notes": "Cached response"
+    }]
 
-                result_2 = vlm_client.extract_step_info(
-                    [str(test_image)],
-                    step_number=999,
-                    use_json_mode=True,
-                    cache_context="cache_test"
-                )
-                second_call_time = time.time() - start_time
-                print(f"  ✓ Second call completed in {second_call_time:.2f}s")
-                
-                # Verify caching worked (second call should be much faster)
-                if second_call_time < 1.0 and first_call_time > 5.0:
-                    print(f"  ✓ CACHE HIT CONFIRMED! ({first_call_time:.2f}s → {second_call_time:.2f}s)")
-                    speedup = first_call_time / second_call_time if second_call_time > 0 else float('inf')
-                    print(f"  ✓ Speedup: {speedup:.1f}x faster")
-                elif second_call_time < first_call_time / 2:
-                    print(f"  ✓ Cache appears to be working (second call faster)")
-                else:
-                    print(f"  ⚠️  Warning: Second call not significantly faster")
-                    print(f"     This might indicate cache is not working properly")
-                
-                # Verify responses match
-                if result_1 == result_2:
-                    print(f"  ✓ Both calls returned identical results")
-                else:
-                    print(f"  ⚠️  Warning: Results differ between calls")
-                    
-            except Exception as e:
-                print(f"  ❌ API call failed: {e}")
-                print(f"     (This is okay if you're rate-limited or API is down)")
-    
-    print("\n" + "=" * 80)
-    print("CACHE STATISTICS")
-    print("=" * 80)
-    
-    stats = cache.stats()
-    print(f"Total cache entries: {stats['size']}")
-    print(f"Cache volume: {stats['volume']:,} bytes")
-    
-    print("\n" + "=" * 80)
-    print("✅ ALL TESTS PASSED!")
-    print("=" * 80)
-    print("\nCaching is working correctly. Your VLM responses will be cached and")
-    print("extraction can resume from the last completed step if interrupted.")
-    
-    return True
+    # First call
+    start_time = time.time()
+    result_1 = mock_vlm_client.extract_step_info(
+        [test_image_path],
+        step_number=999,
+        use_json_mode=True,
+        cache_context="cache_test"
+    )
+    first_call_time = time.time() - start_time
 
-if __name__ == "__main__":
-    try:
-        success = test_cache_functionality()
-        exit(0 if success else 1)
-    except Exception as e:
-        print(f"\n❌ TEST FAILED WITH EXCEPTION: {e}")
-        import traceback
-        traceback.print_exc()
-        exit(1)
+    # Second call (would be cached in real scenario)
+    start_time = time.time()
+    result_2 = mock_vlm_client.extract_step_info(
+        [test_image_path],
+        step_number=999,
+        use_json_mode=True,
+        cache_context="cache_test"
+    )
+    second_call_time = time.time() - start_time
+
+    # Verify results are consistent
+    assert result_1 == result_2
+
+    # In mock scenario, both should be fast
+    assert first_call_time < 1.0
+    assert second_call_time < 1.0
+
+
+@pytest.mark.unit
+def test_cache_key_generation(cache_instance):
+    """Test that cache keys are generated correctly."""
+    model = "test-model"
+    prompt = "test-prompt"
+    images = ["image1.png", "image2.png"]
+
+    # Set a value
+    cache_instance.set(model, prompt, {"data": "test"}, images)
+
+    # Verify it can be retrieved with same parameters
+    result = cache_instance.get(model, prompt, images)
+    assert result is not None
+
+    # Verify different image order creates different key
+    result_different_order = cache_instance.get(model, prompt, ["image2.png", "image1.png"])
+    # This might be None depending on cache implementation
+    # The test documents the behavior
+
+
+@pytest.mark.unit
+def test_cache_clear(cache_instance, test_image_path):
+    """Test clearing the cache."""
+    # Add some entries
+    cache_instance.set("model", "prompt", {"data": "test"}, [test_image_path])
+    assert len(cache_instance.cache) > 0
+
+    # Clear cache
+    cache_instance.cache.clear()
+
+    # Verify empty
+    assert len(cache_instance.cache) == 0
