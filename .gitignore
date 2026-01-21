@@ -55,6 +55,9 @@ output/
 # Exception: Railway config files needed for deployment
 !railway.json
 !railpack.json
+# Exception: package.json files needed for frontend/backend deployment
+!package.json
+!**/package.json
 *.txt
 # Exception: requirements.txt needed for Railway deployment
 !requirements.txt
