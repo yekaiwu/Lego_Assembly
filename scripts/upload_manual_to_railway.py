@@ -10,6 +10,7 @@ Example:
 """
 
 import sys
+import os
 import requests
 from pathlib import Path
 from typing import Optional
@@ -62,7 +63,7 @@ def upload_manual(manual_id: str, railway_url: str, output_dir: Path = Path("./o
     image_files = []
     if temp_pages_dir.exists():
         for img_path in sorted(temp_pages_dir.glob("page_*.png")):
-            image_files.append(('images', (img_path.name, open(img_path, 'rb'), 'image/png')))
+            image_files.append((img_path.name, open(img_path, 'rb'), 'image/png'))
             print(f"✓ Found image: {img_path.name}")
     
     # Add images to files dict
@@ -73,8 +74,17 @@ def upload_manual(manual_id: str, railway_url: str, output_dir: Path = Path("./o
     upload_url = f"{railway_url}/api/upload/manual/{manual_id}"
     print(f"\n📤 Uploading to: {upload_url}")
     
+    # Prepare authentication headers
+    headers = {}
+    admin_token = os.getenv("ADMIN_TOKEN")
+    if admin_token:
+        headers["Authorization"] = f"Bearer {admin_token}"
+    else:
+        print("⚠️  Warning: ADMIN_TOKEN not set. Upload may fail if authentication is required.")
+        print("   Set it with: export ADMIN_TOKEN='your-token-here'")
+    
     try:
-        response = requests.post(upload_url, files=files, timeout=300)
+        response = requests.post(upload_url, files=files, headers=headers, timeout=300)
         response.raise_for_status()
         
         result = response.json()
@@ -82,7 +92,10 @@ def upload_manual(manual_id: str, railway_url: str, output_dir: Path = Path("./o
         print(f"   Uploaded {len(result['uploaded_files'])} files")
         print(f"   Manual ID: {result['manual_id']}")
         print(f"\n📝 Next step: Ingest the manual")
-        print(f"   curl -X POST {railway_url}/api/ingest/manual/{manual_id}")
+        if admin_token:
+            print(f"   curl -X POST -H \"Authorization: Bearer $ADMIN_TOKEN\" {railway_url}/api/ingest/manual/{manual_id}")
+        else:
+            print(f"   curl -X POST -H \"Authorization: Bearer <your-token>\" {railway_url}/api/ingest/manual/{manual_id}")
         print(f"   Or use the frontend to trigger ingestion")
         
         return result
@@ -95,12 +108,14 @@ def upload_manual(manual_id: str, railway_url: str, output_dir: Path = Path("./o
     finally:
         # Close all file handles
         for file_data in files.values():
-            if isinstance(file_data, tuple):
-                if isinstance(file_data[1], tuple):  # images list
-                    for img_tuple in file_data:
-                        if len(img_tuple) == 3:
-                            img_tuple[1][1].close()
-                else:
+            if isinstance(file_data, list):
+                # Multiple files (images): list of (filename, fileobj, content_type) tuples
+                for item in file_data:
+                    if isinstance(item, tuple) and len(item) == 3:
+                        item[1].close()
+            elif isinstance(file_data, tuple):
+                # Single file: (filename, fileobj, content_type) tuple
+                if len(file_data) == 3:
                     file_data[1].close()
 
 
