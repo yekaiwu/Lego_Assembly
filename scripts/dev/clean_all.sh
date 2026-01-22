@@ -4,16 +4,16 @@
 echo "🧹 Cleaning all caches and outputs..."
 
 # Clear VLM and Python caches
-rm -rf ./cache ./backend/cache
+rm -rf ../../cache ../../backend/cache
 
 # Clear EVERYTHING from output directory
 echo "   Clearing output directory..."
-rm -rf output/*
-rm -rf output/.* 2>/dev/null  # Remove hidden files/dirs (ignore errors if none exist)
+rm -rf ../../output/*
+rm -rf ../../output/.* 2>/dev/null  # Remove hidden files/dirs (ignore errors if none exist)
 
 # Clear ChromaDB vector store
 echo "   Clearing ChromaDB vector store..."
-rm -rf backend/chroma_db/*
+rm -rf ../../backend/chroma_db/*
 
 # Clear Python bytecode
 find . -type f -name "*.pyc" -delete

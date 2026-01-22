@@ -2,7 +2,7 @@
 name = "lego-assembly"
 version = "1.0.0"
 description = "LEGO Assembly System - Phase 1: Instruction Manual Processing & 3D Plan Generation"
-readme = "README.md"
+readme = "docs/README.md"
 requires-python = ">=3.9"
 license = {text = "MIT"}
 authors = [

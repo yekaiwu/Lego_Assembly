@@ -17,11 +17,11 @@ from datetime import timedelta
 from dotenv import load_dotenv
 
 # Load .env file BEFORE importing app.auth (so JWT_SECRET_KEY is available)
-env_path = Path(__file__).parent / ".env"
+env_path = Path(__file__).parent.parent.parent / ".env"
 load_dotenv(env_path)
 
 # Add backend to path
-sys.path.insert(0, str(Path(__file__).parent / "backend"))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / "backend"))
 
 from app.auth import create_access_token
 
@@ -82,7 +82,7 @@ def main():
     print()
 
     # Save to file
-    token_file = Path(__file__).parent / ".admin_token.txt"
+    token_file = Path(__file__).parent.parent.parent / ".admin_token.txt"
     with open(token_file, "w") as f:
         f.write(f"# Admin Token for {email}\n")
         f.write(f"# Generated: {timedelta(days=365)}\n")

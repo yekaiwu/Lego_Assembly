@@ -7,7 +7,7 @@ if [ -z "$1" ]; then
     echo "Example: ./ingest_manual.sh 6454922"
     echo ""
     echo "Available manuals in output/:"
-    ls -1 output/ | grep "_extracted.json" | sed 's/_extracted.json//' | sed 's/^/  - /'
+    ls -1 ../../output/ | grep "_extracted.json" | sed 's/_extracted.json//' | sed 's/^/  - /'
     exit 1
 fi
 
@@ -17,7 +17,7 @@ echo "🧱 Ingesting LEGO Manual: $MANUAL_ID"
 echo ""
 
 # Check if manual files exist
-if [ ! -f "output/${MANUAL_ID}_extracted.json" ]; then
+if [ ! -f "../../output/${MANUAL_ID}_extracted.json" ]; then
     echo "❌ Manual files not found for $MANUAL_ID"
     echo "Please process the manual first:"
     echo "  python main.py <manual_url>"
@@ -25,7 +25,7 @@ if [ ! -f "output/${MANUAL_ID}_extracted.json" ]; then
 fi
 
 # Navigate to backend
-cd "$(dirname "$0")/backend"
+cd "$(dirname "$0")/../../backend"
 
 # Check if .env exists
 if [ ! -f .env ]; then

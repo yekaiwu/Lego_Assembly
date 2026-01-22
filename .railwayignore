@@ -12,11 +12,8 @@ pytest.ini
 .pytest_cache/
 
 # Documentation (not needed for runtime)
+docs/
 *.md
-QUICK_START.md
-README.md
-VIDEO_ANALYSIS.md
-TESTING.md
 
 # Output files (should be in persistent storage, not in image)
 output/
@@ -97,15 +94,6 @@ wheels/
 
 # Scripts (utility scripts not needed for runtime)
 scripts/
-clean_all.sh
-start_backend.sh
-start_frontend.sh
-ingest_manual.sh
-fix_graph_images.py
-visualize_graph.py
-huggingface_login.py
-cache_manager.py
-reset_chroma.py
 
 # Lock files (not needed, dependencies installed from requirements)
 uv.lock

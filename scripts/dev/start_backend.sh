@@ -6,7 +6,7 @@ echo "🧱 Starting LEGO RAG Backend..."
 echo ""
 
 # Navigate to backend directory
-cd "$(dirname "$0")/backend"
+cd "$(dirname "$0")/../../backend"
 
 # Check if .env exists
 if [ ! -f .env ]; then
