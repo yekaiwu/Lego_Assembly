@@ -34,6 +34,10 @@ dependencies = [
     "litellm>=1.30.0",
     "openai>=1.6.0", # Required by LiteLLM for OpenAI models
     "google-generativeai>=0.3.0", # For video analysis with Gemini Robotics ER
+    # Security
+    "python-jose[cryptography]>=3.3.0",  # JWT token handling
+    "passlib[bcrypt]>=1.7.4",  # Password hashing
+    "slowapi>=0.1.9",  # Rate limiting
     # Note: torch, torchvision, ultralytics, matplotlib removed for backend deployment
     # These are only needed for local Phase 1 processing, not for Railway backend API
 ]
