@@ -6,6 +6,7 @@ Uses hierarchical graph structure + part similarity scoring + visual matching.
 from typing import Dict, List, Any, Optional, Tuple, Set
 from loguru import logger
 from collections import Counter
+from difflib import SequenceMatcher
 
 
 class StateMatcher:
@@ -277,13 +278,108 @@ class StateMatcher:
         logger.debug(f"Built signature map with {len(signature_map)} entries")
         return signature_map
 
+    def _normalize_shape(self, shape: str) -> str:
+        """
+        Normalize shape description for better matching.
+
+        Examples:
+        - "1x2 slope 30° 1x2x2/3" → "1x2 slope"
+        - "round plate with eye" → "round plate"
+        - "2x4 rectangular brick" → "2x4 brick"
+        """
+        import re
+
+        # Remove special characters and normalize
+        normalized = shape.lower()
+
+        # Remove degree symbols and fractions
+        normalized = re.sub(r'[°×/]', '', normalized)
+
+        # Remove "printed with..." patterns
+        normalized = re.sub(r',?\s*printed with.*', '', normalized)
+
+        # Extract core shape keywords
+        # Common patterns: "1x2 plate", "2x4 brick", "1x1 round plate"
+        core_keywords = ['brick', 'plate', 'tile', 'slope', 'round', 'flat']
+
+        # Keep size prefix (e.g., "1x2", "2x4")
+        size_match = re.search(r'\d+x\d+', normalized)
+        size_prefix = size_match.group(0) if size_match else ""
+
+        # Find core shape keyword
+        shape_keyword = ""
+        for keyword in core_keywords:
+            if keyword in normalized:
+                shape_keyword = keyword
+                break
+
+        # Combine size + shape
+        if size_prefix and shape_keyword:
+            return f"{size_prefix} {shape_keyword}"
+        elif shape_keyword:
+            return shape_keyword
+        else:
+            # Fallback: take first 2-3 words
+            words = normalized.split()[:3]
+            return " ".join(words)
+
+    def _fuzzy_match_signature(
+        self,
+        detected_signature: str,
+        signature_map: Dict[str, str],
+        threshold: float = 0.7
+    ) -> Optional[str]:
+        """
+        Find best matching signature using fuzzy string matching.
+
+        Args:
+            detected_signature: Signature from detected part (e.g., "black:1x2 slope 30°")
+            signature_map: Map of known signatures to node IDs
+            threshold: Minimum similarity score (0-1) to consider a match
+
+        Returns:
+            node_id of best match, or None if no match above threshold
+        """
+        detected_color, detected_shape = detected_signature.split(":", 1)
+
+        best_match = None
+        best_score = 0.0
+
+        for known_sig, node_id in signature_map.items():
+            known_color, known_shape = known_sig.split(":", 1)
+
+            # Color must match exactly
+            if known_color != detected_color:
+                continue
+
+            # Fuzzy match on shape using normalized forms
+            detected_norm = self._normalize_shape(detected_shape)
+            known_norm = self._normalize_shape(known_shape)
+
+            # Calculate similarity
+            similarity = SequenceMatcher(None, detected_norm, known_norm).ratio()
+
+            # Also check if one contains the other (partial match)
+            if detected_norm in known_norm or known_norm in detected_norm:
+                similarity = max(similarity, 0.8)  # Boost partial matches
+
+            if similarity > best_score:
+                best_score = similarity
+                best_match = node_id
+
+        if best_score >= threshold:
+            logger.debug(f"Fuzzy match: '{detected_signature}' → matched with score {best_score:.2f}")
+            return best_match
+        else:
+            return None
+
     def _convert_parts_to_node_ids(
         self,
         detected_parts: List[Dict[str, Any]],
         signature_map: Dict[str, str]
     ) -> Set[str]:
         """
-        Convert detected parts to node IDs using signature matching.
+        Convert detected parts to node IDs using fuzzy signature matching.
 
         Args:
             detected_parts: List of detected parts with color, shape, etc.
@@ -296,18 +392,29 @@ class StateMatcher:
 
         for part in detected_parts:
             color = part.get("color", "").lower()
-            shape = part.get("shape", "").lower()
+
+            # Try both 'shape' and 'description' fields
+            shape = part.get("shape") or part.get("description", "")
+            shape = shape.lower()
 
             if color and shape:
                 signature = f"{color}:{shape}"
+
+                # Try exact match first (fastest)
                 if signature in signature_map:
                     node_id = signature_map[signature]
-                    # Add multiple times based on quantity
                     quantity = part.get("quantity", 1)
                     for _ in range(quantity):
                         node_ids.add(node_id)
                 else:
-                    logger.debug(f"No match for signature: {signature}")
+                    # Fall back to fuzzy matching
+                    node_id = self._fuzzy_match_signature(signature, signature_map, threshold=0.6)
+                    if node_id:
+                        quantity = part.get("quantity", 1)
+                        for _ in range(quantity):
+                            node_ids.add(node_id)
+                    else:
+                        logger.debug(f"No match for signature: {signature}")
 
         return node_ids
 
