@@ -200,12 +200,33 @@ class ManualDataProcessor:
                 if page_path.exists():
                     image_path = str(page_path)
                 else:
-                    # Try relative to output dir if the path doesn't exist as-is
-                    alt_path = self.output_dir / Path(raw_path).name
+                    # Try relative to output dir (handles both old and new path formats)
+                    # New format: output/temp_pages/{manual_id}/page_XXX.png
+                    # Old format: output/temp_pages/page_XXX.png (fallback)
+                    if "temp_pages" in str(raw_path):
+                        # Extract filename and manual_id if present
+                        path_parts = str(raw_path).split("/")
+                        filename = Path(raw_path).name
+                        
+                        # Check if path includes manual_id (new format)
+                        if len(path_parts) >= 3 and path_parts[-3] == "temp_pages":
+                            # Format: output/temp_pages/{manual_id}/page_XXX.png
+                            manual_id_from_path = path_parts[-2]
+                            alt_path = self.output_dir / "temp_pages" / manual_id_from_path / filename
+                        else:
+                            # Old format or manual_id not in path, try manual_id from current context
+                            alt_path = self.output_dir / "temp_pages" / manual_id / filename
+                            if not alt_path.exists():
+                                # Fallback to old format
+                                alt_path = self.output_dir / "temp_pages" / filename
+                    else:
+                        # No temp_pages in path, try direct relative
+                        alt_path = self.output_dir / Path(raw_path).name
+                    
                     if alt_path.exists():
                         image_path = str(alt_path)
                     else:
-                        logger.warning(f"Image not found for step {step_number}: {raw_path}")
+                        logger.warning(f"Image not found for step {step_number}: {raw_path} (tried: {alt_path})")
             else:
                 logger.warning(f"No source page paths found for step {step_number}")
             

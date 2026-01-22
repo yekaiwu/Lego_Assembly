@@ -32,9 +32,13 @@ class ProcessingCheckpoint:
     """Manages processing checkpoints to enable resume functionality."""
     
     def __init__(self, output_dir: Path, assembly_id: str):
-        self.checkpoint_path = output_dir / f".{assembly_id}_checkpoint.json"
+        # Organize checkpoints by manual_id: output/{manual_id}/.checkpoint.json
+        self.manual_dir = output_dir / assembly_id
+        self.manual_dir.mkdir(parents=True, exist_ok=True)
+        self.checkpoint_path = self.manual_dir / ".checkpoint.json"
         self.assembly_id = assembly_id
         self.output_dir = output_dir
+        self.manual_dir = self.manual_dir  # Store for use in main()
     
     def load(self) -> Dict[str, Any]:
         """Load checkpoint data if it exists."""
@@ -143,8 +147,13 @@ def main(
     logger.info(f"  Spatial Relationships: {'Enabled' if enable_spatial_relationships else 'DISABLED'}")
     logger.info("")
 
-    # Initialize checkpoint manager
+    # Initialize checkpoint manager (creates manual_id subdirectory)
     checkpoint = ProcessingCheckpoint(output_dir, assembly_id)
+    manual_dir = checkpoint.manual_dir  # Directory for this manual's files
+    
+    # Create organized directory structure
+    temp_pages_dir = output_dir / "temp_pages" / assembly_id
+    temp_pages_dir.mkdir(parents=True, exist_ok=True)
     
     if resume:
         checkpoint_data = checkpoint.load()
@@ -160,7 +169,6 @@ def main(
         checkpoint.clear()
     
     # Step 1: Manual Input Processing
-    temp_pages_dir = output_dir / "temp_pages"
     temp_pages_exist = temp_pages_dir.exists() and list(temp_pages_dir.glob("page_*.png"))
 
     if not checkpoint.is_step_complete("page_extraction") or not temp_pages_exist:
@@ -168,7 +176,7 @@ def main(
             logger.warning("⚠ temp_pages missing despite checkpoint - re-extracting pages")
 
         logger.info("Step 1/7: Processing manual input...")
-        manual_handler = ManualInputHandler(output_dir=temp_pages_dir)
+        manual_handler = ManualInputHandler(output_dir=output_dir, manual_id=assembly_id)
 
         page_paths = manual_handler.process_manual(input_path)
         logger.info(f"Extracted {len(page_paths)} pages")
@@ -176,9 +184,8 @@ def main(
         checkpoint.save("page_extraction", {"page_count": len(page_paths)})
     else:
         logger.info("Step 1/7: ✓ Page extraction already complete (skipping)")
-        # Load page paths from checkpoint
-        manual_handler = ManualInputHandler(output_dir=temp_pages_dir)
-        page_paths = sorted(list(temp_pages_dir.glob("page_*.png")))
+        # Load page paths from manual-specific directory
+        page_paths = sorted([str(p) for p in temp_pages_dir.glob("page_*.png")])
 
     # Step 2 (UPDATED): User-Provided Metadata Collection
     if not checkpoint.is_step_complete("metadata_collection"):
@@ -233,7 +240,7 @@ def main(
         logger.info(f"Initialized context-aware extraction for: {doc_metadata.main_build}")
 
         # Check for partially completed extraction (incremental save file)
-        temp_extracted_path = output_dir / f"{assembly_id}_extracted_temp.json"
+        temp_extracted_path = manual_dir / f"{assembly_id}_extracted_temp.json"
         extracted_steps = []
         start_step = 1
         
@@ -273,8 +280,19 @@ def main(
                     step_num = result.get("step_number", "unknown")
                     logger.info(f"  └─ Extracted step {step_num}")
                     # Track which page this step came from
+                    # Convert paths to relative paths with manual_id: output/temp_pages/{manual_id}/page_XXX.png
+                    relative_image_paths = []
+                    for p in image_paths:
+                        p_path = Path(p)
+                        # If path already contains manual_id, use as-is, otherwise add it
+                        if f"temp_pages/{assembly_id}" in str(p):
+                            relative_image_paths.append(str(p))
+                        else:
+                            # Extract just the filename and build relative path
+                            filename = p_path.name
+                            relative_image_paths.append(f"output/temp_pages/{assembly_id}/{filename}")
                     result["_source_page_idx"] = i
-                    result["_source_page_paths"] = image_paths
+                    result["_source_page_paths"] = relative_image_paths
                     extracted_steps.append(result)
                 
                 # INCREMENTAL SAVE: Save progress after each successful page
@@ -326,7 +344,7 @@ def main(
         logger.info("")
 
         # Save extracted data (without SAM3)
-        extracted_path = output_dir / f"{assembly_id}_extracted.json"
+        extracted_path = manual_dir / f"{assembly_id}_extracted.json"
         with open(extracted_path, 'w', encoding='utf-8') as f:
             json.dump(extracted_steps, f, indent=2, ensure_ascii=False)
         logger.info(f"Saved extracted data to {extracted_path}")
@@ -340,7 +358,7 @@ def main(
     else:
         logger.info("Step 3/7: ✓ Step extraction already complete (skipping)")
         # Load extracted data
-        extracted_path = output_dir / f"{assembly_id}_extracted.json"
+        extracted_path = manual_dir / f"{assembly_id}_extracted.json"
         with open(extracted_path, 'r', encoding='utf-8') as f:
             extracted_steps = json.load(f)
     
@@ -358,7 +376,7 @@ def main(
             logger.info("Dependency graph is valid")
 
         # Save dependency graph
-        graph_path = output_dir / f"{assembly_id}_dependencies.json"
+        graph_path = manual_dir / f"{assembly_id}_dependencies.json"
         with open(graph_path, 'w', encoding='utf-8') as f:
             json.dump(dep_graph.to_dict(), f, indent=2)
         logger.info(f"Saved dependency graph to {graph_path}")
@@ -368,7 +386,7 @@ def main(
     else:
         logger.info("Step 4/7: ✓ Dependency graph already complete (skipping)")
         # Load dependency graph
-        graph_path = output_dir / f"{assembly_id}_dependencies.json"
+        graph_path = manual_dir / f"{assembly_id}_dependencies.json"
         with open(graph_path, 'r', encoding='utf-8') as f:
             dep_graph_dict = json.load(f)
         dep_graph = DependencyGraph()
@@ -434,7 +452,7 @@ def main(
                         # Continue pipeline without segmentation data for this step
 
                 # Save updated dependency graph with SAM3 data
-                graph_path = output_dir / f"{assembly_id}_dependencies.json"
+                graph_path = manual_dir / f"{assembly_id}_dependencies.json"
                 with open(graph_path, 'w', encoding='utf-8') as f:
                     json.dump(dep_graph.to_dict(), f, indent=2)
                 logger.info(f"Updated dependency graph with SAM3 data: {graph_path}")
@@ -455,7 +473,7 @@ def main(
     else:
         logger.info("Step 4.5/7: ✓ SAM3 segmentation already complete (skipping)")
         # Reload dependency graph with SAM3 data
-        graph_path = output_dir / f"{assembly_id}_dependencies.json"
+        graph_path = manual_dir / f"{assembly_id}_dependencies.json"
         with open(graph_path, 'r', encoding='utf-8') as f:
             dep_graph_dict = json.load(f)
         dep_graph.nodes = dep_graph_dict.get('nodes', {})
@@ -477,11 +495,11 @@ def main(
         hierarchical_graph = graph_builder.build_graph(
             extracted_steps=cleaned_steps,
             assembly_id=assembly_id,
-            image_dir=output_dir / "temp_pages"
+            image_dir=temp_pages_dir
         )
 
         # Save hierarchical graph
-        hierarchical_graph_path = output_dir / f"{assembly_id}_graph.json"
+        hierarchical_graph_path = manual_dir / f"{assembly_id}_graph.json"
         graph_builder.save_graph(hierarchical_graph, hierarchical_graph_path)
 
         logger.info(f"Hierarchical graph: {hierarchical_graph['metadata']['total_parts']} parts, "
@@ -511,10 +529,10 @@ def main(
         )
         
         # Export plan
-        json_plan_path = output_dir / f"{assembly_id}_plan.json"
+        json_plan_path = manual_dir / f"{assembly_id}_plan.json"
         plan_generator.export_plan(assembly_plan, json_plan_path, format="json")
         
-        text_plan_path = output_dir / f"{assembly_id}_plan.txt"
+        text_plan_path = manual_dir / f"{assembly_id}_plan.txt"
         plan_generator.export_plan(assembly_plan, text_plan_path, format="text")
         
         logger.info(f"Validation: {assembly_plan['validation']['summary']}")
@@ -538,8 +556,8 @@ def main(
                 print("\n" + f.read())
     else:
         logger.info("Step 6/7: ✓ Plan generation already complete (skipping)")
-        json_plan_path = output_dir / f"{assembly_id}_plan.json"
-        text_plan_path = output_dir / f"{assembly_id}_plan.txt"
+        json_plan_path = manual_dir / f"{assembly_id}_plan.json"
+        text_plan_path = manual_dir / f"{assembly_id}_plan.txt"
         with open(json_plan_path, 'r', encoding='utf-8') as f:
             assembly_plan = json.load(f)
     

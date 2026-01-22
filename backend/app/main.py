@@ -275,41 +275,45 @@ async def upload_manual_files(
         output_dir = Path(settings.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Create temp_pages directory if images are provided
-        temp_pages_dir = output_dir / "temp_pages"
+        # Create manual-specific directory structure
+        manual_dir = output_dir / manual_id
+        manual_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create temp_pages/{manual_id} directory if images are provided
+        temp_pages_dir = output_dir / "temp_pages" / manual_id
         if images:
             temp_pages_dir.mkdir(parents=True, exist_ok=True)
 
         uploaded_files = []
 
-        # Validate and upload required JSON files
+        # Validate and upload required JSON files (to manual_id subdirectory)
         for file, filename in [
             (extracted_json, f"{manual_id}_extracted.json"),
             (plan_json, f"{manual_id}_plan.json"),
             (dependencies_json, f"{manual_id}_dependencies.json"),
         ]:
             await validate_json_upload(file)
-            file_path = output_dir / filename
+            file_path = manual_dir / filename
             with open(file_path, "wb") as f:
                 shutil.copyfileobj(file.file, f)
-            uploaded_files.append(filename)
-            logger.info(f"Uploaded {filename}")
+            uploaded_files.append(f"{manual_id}/{filename}")
+            logger.info(f"Uploaded {manual_id}/{filename}")
 
-        # Upload optional files
+        # Upload optional files (to manual_id subdirectory)
         if plan_txt:
-            file_path = output_dir / f"{manual_id}_plan.txt"
+            file_path = manual_dir / f"{manual_id}_plan.txt"
             with open(file_path, "wb") as f:
                 shutil.copyfileobj(plan_txt.file, f)
-            uploaded_files.append(f"{manual_id}_plan.txt")
+            uploaded_files.append(f"{manual_id}/{manual_id}_plan.txt")
 
         if graph_json:
             await validate_json_upload(graph_json)
-            file_path = output_dir / f"{manual_id}_graph.json"
+            file_path = manual_dir / f"{manual_id}_graph.json"
             with open(file_path, "wb") as f:
                 shutil.copyfileobj(graph_json.file, f)
-            uploaded_files.append(f"{manual_id}_graph.json")
+            uploaded_files.append(f"{manual_id}/{manual_id}_graph.json")
 
-        # Validate and upload images
+        # Validate and upload images (to temp_pages/{manual_id}/)
         if images:
             for image in images:
                 await validate_image_upload(image)
@@ -318,7 +322,7 @@ async def upload_manual_files(
                 file_path = temp_pages_dir / safe_filename
                 with open(file_path, "wb") as f:
                     shutil.copyfileobj(image.file, f)
-                uploaded_files.append(f"temp_pages/{safe_filename}")
+                uploaded_files.append(f"temp_pages/{manual_id}/{safe_filename}")
 
         security_logger.info(f"File upload completed for manual {manual_id}: {len(uploaded_files)} files")
 

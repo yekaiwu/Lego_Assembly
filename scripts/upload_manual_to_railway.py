@@ -27,17 +27,18 @@ def upload_manual(manual_id: str, railway_url: str, output_dir: Path = Path("./o
     # Remove trailing slash from URL
     railway_url = railway_url.rstrip('/')
     
-    # Required files
+    # Required files (now in manual_id subdirectory)
+    manual_dir = output_dir / manual_id
     required_files = {
-        'extracted_json': output_dir / f"{manual_id}_extracted.json",
-        'plan_json': output_dir / f"{manual_id}_plan.json",
-        'dependencies_json': output_dir / f"{manual_id}_dependencies.json",
+        'extracted_json': manual_dir / f"{manual_id}_extracted.json",
+        'plan_json': manual_dir / f"{manual_id}_plan.json",
+        'dependencies_json': manual_dir / f"{manual_id}_dependencies.json",
     }
     
     # Optional files
     optional_files = {
-        'plan_txt': output_dir / f"{manual_id}_plan.txt",
-        'graph_json': output_dir / f"{manual_id}_graph.json",
+        'plan_txt': manual_dir / f"{manual_id}_plan.txt",
+        'graph_json': manual_dir / f"{manual_id}_graph.json",
     }
     
     # Check required files exist
@@ -49,24 +50,29 @@ def upload_manual(manual_id: str, railway_url: str, output_dir: Path = Path("./o
     
     # Prepare files for upload
     files = {}
+    
+    # Add required JSON files (single file per field)
     for key, path in required_files.items():
         files[key] = (path.name, open(path, 'rb'), 'application/json')
         print(f"✓ Found {path.name}")
     
+    # Add optional JSON files (single file per field)
     for key, path in optional_files.items():
         if path.exists():
             files[key] = (path.name, open(path, 'rb'), 'application/json')
             print(f"✓ Found {path.name} (optional)")
     
-    # Upload images from temp_pages
-    temp_pages_dir = output_dir / "temp_pages"
+    # Upload images from temp_pages/{manual_id}/
+    # For multiple files with same field name, use a list of (filename, fileobj, content_type) tuples
+    temp_pages_dir = output_dir / "temp_pages" / manual_id
     image_files = []
     if temp_pages_dir.exists():
         for img_path in sorted(temp_pages_dir.glob("page_*.png")):
+            # Format: (filename, fileobj, content_type) - field name is the dict key
             image_files.append((img_path.name, open(img_path, 'rb'), 'image/png'))
             print(f"✓ Found image: {img_path.name}")
     
-    # Add images to files dict
+    # Add images list to files dict
     if image_files:
         files['images'] = image_files
     
@@ -109,10 +115,10 @@ def upload_manual(manual_id: str, railway_url: str, output_dir: Path = Path("./o
         # Close all file handles
         for file_data in files.values():
             if isinstance(file_data, list):
-                # Multiple files (images): list of (filename, fileobj, content_type) tuples
-                for item in file_data:
-                    if isinstance(item, tuple) and len(item) == 3:
-                        item[1].close()
+                # Multiple files: list of (filename, fileobj, content_type) tuples
+                for file_tuple in file_data:
+                    if isinstance(file_tuple, tuple) and len(file_tuple) >= 2:
+                        file_tuple[1].close()  # Close the file object
             elif isinstance(file_data, tuple):
                 # Single file: (filename, fileobj, content_type) tuple
                 if len(file_data) == 3:
