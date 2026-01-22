@@ -1,0 +1,33 @@
+Analyze these LEGO instruction manual pages and assign roles to the following parts.
+
+Parts List:
+{{parts_list}}
+
+For each part, determine its role in LEGO construction:
+
+Return JSON format:
+{
+  "part_roles": [
+    {
+      "part_name": "exact part name from list",
+      "color": "color",
+      "shape": "shape",
+      "role": "structural|decorative|functional|connector",
+      "reasoning": "brief explanation of why this role was chosen"
+    }
+  ]
+}
+
+ROLE ASSIGNMENT GUIDELINES:
+- **structural**: Base plates, large bricks, frames (load-bearing foundation pieces)
+- **decorative**: Colored tiles, printed pieces, stickers (aesthetic elements)
+- **functional**: Wheels, hinges, Technic pins, axles (moving/mechanical parts)
+- **connector**: Small plates, brackets, clips (joining pieces together)
+
+GUIDELINES:
+- Base plates and large bricks → structural
+- Wheels, axles, hinges → functional
+- Small plates, 1x1 pieces for connecting → connector
+- Colored tiles without studs, printed pieces → decorative
+- Consider part size, shape, and typical LEGO building patterns
+
