@@ -308,7 +308,7 @@ output/*/manual_*_graph_summary.txt:
 
 ```bash
 # Option 1: Use the startup script (recommended)
-./start_backend.sh
+./scripts/dev/start_backend.sh
 
 # Option 2: Manual start
 cd backend
@@ -391,7 +391,7 @@ Converts Phase 1 output into a searchable vector database:
 
 ```bash
 # Option 1: Use the startup script (recommended)
-./start_frontend.sh
+./scripts/dev/start_frontend.sh
 
 # Option 2: Manual start
 cd frontend
