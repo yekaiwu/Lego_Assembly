@@ -49,32 +49,27 @@ def upload_manual(manual_id: str, railway_url: str, output_dir: Path = Path("./o
         sys.exit(1)
     
     # Prepare files for upload
-    files = {}
-    
+    # Use list of tuples to support multiple files with same field name
+    files = []
+
     # Add required JSON files (single file per field)
     for key, path in required_files.items():
-        files[key] = (path.name, open(path, 'rb'), 'application/json')
+        files.append((key, (path.name, open(path, 'rb'), 'application/json')))
         print(f"✓ Found {path.name}")
-    
+
     # Add optional JSON files (single file per field)
     for key, path in optional_files.items():
         if path.exists():
-            files[key] = (path.name, open(path, 'rb'), 'application/json')
+            files.append((key, (path.name, open(path, 'rb'), 'application/json')))
             print(f"✓ Found {path.name} (optional)")
-    
+
     # Upload images from temp_pages/{manual_id}/
-    # For multiple files with same field name, use a list of (filename, fileobj, content_type) tuples
+    # For multiple files with same field name, add each as a separate tuple
     temp_pages_dir = output_dir / "temp_pages" / manual_id
-    image_files = []
     if temp_pages_dir.exists():
         for img_path in sorted(temp_pages_dir.glob("page_*.png")):
-            # Format: (filename, fileobj, content_type) - field name is the dict key
-            image_files.append((img_path.name, open(img_path, 'rb'), 'image/png'))
+            files.append(('images', (img_path.name, open(img_path, 'rb'), 'image/png')))
             print(f"✓ Found image: {img_path.name}")
-    
-    # Add images list to files dict
-    if image_files:
-        files['images'] = image_files
     
     # Upload to Railway
     upload_url = f"{railway_url}/api/upload/manual/{manual_id}"
@@ -113,16 +108,10 @@ def upload_manual(manual_id: str, railway_url: str, output_dir: Path = Path("./o
         sys.exit(1)
     finally:
         # Close all file handles
-        for file_data in files.values():
-            if isinstance(file_data, list):
-                # Multiple files: list of (filename, fileobj, content_type) tuples
-                for file_tuple in file_data:
-                    if isinstance(file_tuple, tuple) and len(file_tuple) >= 2:
-                        file_tuple[1].close()  # Close the file object
-            elif isinstance(file_data, tuple):
-                # Single file: (filename, fileobj, content_type) tuple
-                if len(file_data) == 3:
-                    file_data[1].close()
+        for field_name, file_tuple in files:
+            # file_tuple is (filename, fileobj, content_type)
+            if isinstance(file_tuple, tuple) and len(file_tuple) >= 2:
+                file_tuple[1].close()  # Close the file object
 
 
 if __name__ == "__main__":
