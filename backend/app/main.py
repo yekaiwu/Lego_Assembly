@@ -3,17 +3,31 @@ FastAPI Main Application for LEGO RAG System.
 Provides REST API endpoints for manual ingestion and querying.
 """
 
-from fastapi import FastAPI, HTTPException, Query, Path as PathParam, UploadFile, File
+from fastapi import FastAPI, HTTPException, Query, Path as PathParam, UploadFile, File, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Dict
 import uuid
 import shutil
 import json
+import os
 from loguru import logger
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 from .config import get_settings
+from .auth import require_admin, get_current_user, verify_api_key_or_token
+from .security import (
+    sanitize_filename,
+    validate_image_upload,
+    validate_video_upload,
+    validate_json_upload,
+    sanitize_session_id,
+    sanitize_manual_id,
+    validate_path_traversal
+)
 from .models.schemas import (
     IngestionResponse,
     QueryResponse,
@@ -40,6 +54,12 @@ from .vector_store.chroma_manager import get_chroma_manager
 from .vision import get_state_analyzer, get_state_comparator, get_guidance_generator
 from .graph.graph_manager import get_graph_manager
 
+# Initialize rate limiter
+limiter = Limiter(key_func=get_remote_address, default_limits=["100/hour"])
+
+# Security audit logger
+security_logger = logger.bind(audit=True)
+
 # Initialize FastAPI app
 app = FastAPI(
     title="LEGO Assembly RAG API",
@@ -47,14 +67,41 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Configure CORS
+# Attach rate limiter to app
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# Configure CORS with specific origins
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
+PRODUCTION_FRONTEND = os.getenv("PRODUCTION_FRONTEND", "")
+ALLOWED_ORIGINS = [FRONTEND_URL]
+if PRODUCTION_FRONTEND:
+    ALLOWED_ORIGINS.append(PRODUCTION_FRONTEND)
+
+logger.info(f"CORS configured for origins: {ALLOWED_ORIGINS}")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, specify actual origins
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_headers=["Content-Type", "Authorization"],
+    max_age=3600,
 )
+
+# Security headers middleware
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    """Add security headers to all responses."""
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    # Add HSTS in production
+    if os.getenv("ENVIRONMENT") == "production":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
 
 # Initialize services
 settings = get_settings()
@@ -100,66 +147,104 @@ async def health_check():
 # ==================== Ingestion API ====================
 
 @app.post("/api/ingest/manual/{manual_id}", response_model=IngestionResponse)
+@limiter.limit("10/minute")
 async def ingest_manual(
-    manual_id: str = PathParam(..., description="Manual identifier (e.g., 6454922)")
+    request: Request,
+    manual_id: str = PathParam(..., description="Manual identifier (e.g., 6454922)"),
+    admin: Dict = Depends(require_admin)
 ):
     """
     Ingest a specific manual into the vector store.
     The manual files must exist in the output directory.
+
+    **Requires admin authentication.**
     """
     try:
+        # Sanitize manual_id
+        manual_id = sanitize_manual_id(manual_id)
+
+        security_logger.info(f"Manual ingestion started: {manual_id} by user {admin.get('sub')}")
+
         result = ingestion_service.ingest_manual(manual_id)
-        
+
         if result['status'] == 'error':
-            raise HTTPException(status_code=500, detail=result['message'])
-        
+            raise HTTPException(status_code=500, detail="Ingestion failed")
+
+        security_logger.info(f"Manual ingestion completed: {manual_id}")
         return IngestionResponse(**result)
-        
-    except FileNotFoundError as e:
+
+    except FileNotFoundError:
         raise HTTPException(
             status_code=404,
-            detail=f"Manual files not found for {manual_id}. Please process the manual first using main.py"
+            detail="Manual files not found"
         )
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Ingestion error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Ingestion error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.post("/api/ingest/all")
-async def ingest_all_manuals():
+@limiter.limit("1/hour")
+async def ingest_all_manuals(
+    request: Request,
+    admin: Dict = Depends(require_admin)
+):
     """
     Ingest all available manuals from the output directory.
+
+    **Requires admin authentication.**
+    **Rate limited to 1 request per hour due to high cost.**
     """
     try:
+        security_logger.warning(f"Bulk ingestion started by user {admin.get('sub')}")
         result = ingestion_service.ingest_all_manuals()
+        security_logger.info(f"Bulk ingestion completed")
         return result
     except Exception as e:
-        logger.error(f"Bulk ingestion error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Bulk ingestion error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.delete("/api/manual/{manual_id}")
+@limiter.limit("5/hour")
 async def delete_manual(
-    manual_id: str = PathParam(..., description="Manual identifier")
+    request: Request,
+    manual_id: str = PathParam(..., description="Manual identifier"),
+    admin: Dict = Depends(require_admin)
 ):
     """
     Remove a manual from the vector store.
+
+    **Requires admin authentication.**
+    **Destructive operation - use with caution.**
     """
     try:
+        # Sanitize manual_id
+        manual_id = sanitize_manual_id(manual_id)
+
+        security_logger.warning(f"Manual deletion requested: {manual_id} by user {admin.get('sub')}")
+
         result = ingestion_service.remove_manual(manual_id)
-        
+
         if result['status'] == 'error':
-            raise HTTPException(status_code=500, detail=result['message'])
-        
+            raise HTTPException(status_code=500, detail="Deletion failed")
+
+        security_logger.info(f"Manual deleted: {manual_id}")
         return result
-        
+
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Deletion error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Deletion error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.post("/api/upload/manual/{manual_id}")
+@limiter.limit("20/hour")
 async def upload_manual_files(
+    request: Request,
     manual_id: str = PathParam(..., description="Manual identifier"),
     extracted_json: UploadFile = File(..., description="extracted.json file"),
     plan_json: UploadFile = File(..., description="plan.json file"),
@@ -167,73 +252,88 @@ async def upload_manual_files(
     plan_txt: UploadFile = File(None, description="plan.txt file (optional)"),
     graph_json: UploadFile = File(None, description="graph.json file (optional)"),
     images: List[UploadFile] = File(None, description="Step images (temp_pages/*.png)"),
+    admin: Dict = Depends(require_admin)
 ):
     """
-    Upload manual files to Railway backend.
-    
+    Upload manual files to backend.
+
+    **Requires admin authentication.**
+
     Uploads all necessary files for a manual:
     - extracted.json, plan.json, dependencies.json (required)
     - plan.txt, graph.json (optional)
-    - Images from temp_pages/ (optional, can upload separately)
-    
+    - Images from temp_pages/ (optional)
+
     After upload, call /api/ingest/manual/{manual_id} to ingest into vector store.
     """
     try:
+        # Sanitize manual_id
+        manual_id = sanitize_manual_id(manual_id)
+
+        security_logger.info(f"File upload started for manual {manual_id} by user {admin.get('sub')}")
+
         output_dir = Path(settings.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # Create temp_pages directory if images are provided
         temp_pages_dir = output_dir / "temp_pages"
         if images:
             temp_pages_dir.mkdir(parents=True, exist_ok=True)
-        
+
         uploaded_files = []
-        
-        # Upload required JSON files
+
+        # Validate and upload required JSON files
         for file, filename in [
             (extracted_json, f"{manual_id}_extracted.json"),
             (plan_json, f"{manual_id}_plan.json"),
             (dependencies_json, f"{manual_id}_dependencies.json"),
         ]:
+            await validate_json_upload(file)
             file_path = output_dir / filename
             with open(file_path, "wb") as f:
                 shutil.copyfileobj(file.file, f)
             uploaded_files.append(filename)
             logger.info(f"Uploaded {filename}")
-        
+
         # Upload optional files
         if plan_txt:
             file_path = output_dir / f"{manual_id}_plan.txt"
             with open(file_path, "wb") as f:
                 shutil.copyfileobj(plan_txt.file, f)
             uploaded_files.append(f"{manual_id}_plan.txt")
-        
+
         if graph_json:
+            await validate_json_upload(graph_json)
             file_path = output_dir / f"{manual_id}_graph.json"
             with open(file_path, "wb") as f:
                 shutil.copyfileobj(graph_json.file, f)
             uploaded_files.append(f"{manual_id}_graph.json")
-        
-        # Upload images
+
+        # Validate and upload images
         if images:
             for image in images:
-                # Preserve original filename or use index
-                filename = image.filename or f"page_{len(uploaded_files)}.png"
-                file_path = temp_pages_dir / filename
+                await validate_image_upload(image)
+                # Sanitize filename
+                safe_filename = sanitize_filename(image.filename or f"page_{len(uploaded_files)}.png")
+                file_path = temp_pages_dir / safe_filename
                 with open(file_path, "wb") as f:
                     shutil.copyfileobj(image.file, f)
-                uploaded_files.append(f"temp_pages/{filename}")
-        
+                uploaded_files.append(f"temp_pages/{safe_filename}")
+
+        security_logger.info(f"File upload completed for manual {manual_id}: {len(uploaded_files)} files")
+
         return {
             "status": "success",
             "manual_id": manual_id,
             "uploaded_files": uploaded_files,
-            "message": f"Successfully uploaded {len(uploaded_files)} files for manual {manual_id}. Call /api/ingest/manual/{manual_id} to ingest."
+            "message": f"Successfully uploaded {len(uploaded_files)} files. Call /api/ingest/manual/{manual_id} to ingest."
         }
-        
+
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error uploading manual files: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error uploading manual files: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # ==================== Query API ====================
@@ -746,13 +846,15 @@ async def serve_image(
 # ==================== Vision/State Analysis API ====================
 
 @app.post("/api/vision/upload-images", response_model=ImageUploadResponse)
+@limiter.limit("30/hour")
 async def upload_assembly_images(
+    request: Request,
     images: List[UploadFile] = File(..., description="1-4 images of assembly")
 ):
     """
     Upload images of user's physical assembly.
     Accepts 1-4 images from different angles (2+ recommended for better accuracy).
-    
+
     Returns session_id for subsequent analysis.
     """
     try:
@@ -762,46 +864,54 @@ async def upload_assembly_images(
                 status_code=400,
                 detail="Please upload between 1 and 4 images"
             )
-        
-        # Generate session ID
-        session_id = str(uuid.uuid4())
-        
-        # Create upload directory
-        upload_dir = Path(f"/tmp/lego_assembly_uploads/{session_id}")
+
+        # Validate all images before uploading
+        for image in images:
+            await validate_image_upload(image)
+
+        # Generate secure session ID using secrets module
+        import secrets
+        session_id = secrets.token_urlsafe(32)
+
+        # Create upload directory with validation
+        base_upload_dir = Path("/tmp/lego_assembly_uploads")
+        base_upload_dir.mkdir(parents=True, exist_ok=True)
+        upload_dir = base_upload_dir / session_id
         upload_dir.mkdir(parents=True, exist_ok=True)
-        
+
+        # Verify no path traversal
+        if not str(upload_dir.resolve()).startswith(str(base_upload_dir.resolve())):
+            raise HTTPException(status_code=400, detail="Invalid path")
+
         # Save uploaded files
         uploaded_files = []
         for i, image in enumerate(images):
-            # Validate file type
-            if not image.content_type.startswith("image/"):
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"File {image.filename} is not an image"
-                )
-            
-            # Save file
-            file_extension = Path(image.filename).suffix or ".jpg"
-            file_path = upload_dir / f"image_{i + 1}{file_extension}"
-            
+            # Sanitize file extension
+            file_extension = Path(image.filename).suffix
+            safe_extension = sanitize_filename(file_extension) if file_extension else ".jpg"
+            if not safe_extension.startswith('.'):
+                safe_extension = f".{safe_extension}"
+
+            file_path = upload_dir / f"image_{i + 1}{safe_extension}"
+
             with open(file_path, "wb") as f:
                 shutil.copyfileobj(image.file, f)
-            
+
             uploaded_files.append(str(file_path))
             logger.info(f"Saved image: {file_path}")
-        
+
         return ImageUploadResponse(
             uploaded_files=uploaded_files,
             session_id=session_id,
             message=f"Successfully uploaded {len(uploaded_files)} images",
             status="success"
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error uploading images: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error uploading images: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.post("/api/vision/analyze", response_model=StateAnalysisResponse)
@@ -1279,7 +1389,9 @@ task_manager = TaskManager()
 
 
 @app.post("/api/video/upload", response_model=VideoUploadResponse)
+@limiter.limit("10/hour")
 async def upload_video(
+    request: Request,
     manual_id: str = Form(...),
     video: UploadFile = File(...)
 ):
@@ -1288,25 +1400,43 @@ async def upload_video(
 
     Args:
         manual_id: Manual ID this video belongs to
-        video: Video file (MP4, MOV, AVI)
+        video: Video file (MP4, MOV, AVI, WebM - max 500MB)
 
     Returns:
         Video metadata and upload confirmation
     """
     try:
-        # Validate file format
-        temp_path = f"/tmp/{video.filename}"
+        # Sanitize manual_id
+        manual_id = sanitize_manual_id(manual_id)
+
+        # Validate video
+        await validate_video_upload(video)
+
+        # Create secure temp directory
+        import secrets
+        import tempfile
+        temp_dir = Path("/tmp/lego_videos")
+        temp_dir.mkdir(parents=True, exist_ok=True)
+
+        # Sanitize filename to prevent path traversal
+        safe_filename = sanitize_filename(video.filename or "video.mp4")
+        temp_id = secrets.token_hex(8)
+        temp_path = temp_dir / f"{temp_id}_{safe_filename}"
+
+        # Write video to temp file
         with open(temp_path, "wb") as f:
             f.write(await video.read())
 
-        if not validate_video_format(temp_path):
+        # Validate video format
+        if not validate_video_format(str(temp_path)):
+            temp_path.unlink()
             raise HTTPException(
                 status_code=400,
-                detail="Invalid video format. Supported: MP4, MOV, AVI"
+                detail="Invalid video format"
             )
 
         # Extract metadata
-        metadata = extract_video_metadata(temp_path)
+        metadata = extract_video_metadata(str(temp_path))
 
         # Save video
         with open(temp_path, "rb") as f:
@@ -1315,23 +1445,25 @@ async def upload_video(
         video_id, video_path = video_storage.save_uploaded_video(
             video_data,
             manual_id,
-            video.filename
+            safe_filename
         )
 
         # Cleanup temp file
-        Path(temp_path).unlink()
+        temp_path.unlink()
 
         logger.info(f"Uploaded video {video_id} for manual {manual_id}")
 
         return VideoUploadResponse(
             video_id=video_id,
-            filename=video.filename,
+            filename=safe_filename,
             **metadata
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error uploading video: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error uploading video: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 async def run_video_analysis(

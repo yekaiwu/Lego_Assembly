@@ -39,3 +39,8 @@ loguru>=0.7.2
 
 # Caching
 diskcache>=5.6.3
+
+# Security (Authentication, Rate Limiting)
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+slowapi>=0.1.9
