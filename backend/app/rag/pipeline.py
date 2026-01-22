@@ -174,6 +174,8 @@ class RAGPipeline:
                 image_analysis=image_analysis
             )
 
+            logger.info(f"✓ Generated answer with {len(answer)} characters")
+
             # Step 5: Format sources
             sources = []
             for ctx in contexts:
@@ -191,36 +193,55 @@ class RAGPipeline:
             if image_analysis:
                 from ..models.schemas import ImageAnalysisResult, DetectedPart
 
-                # Convert detected parts to DetectedPart schema
-                detected_parts_formatted = [
-                    DetectedPart(
-                        description=p.get("description", ""),
-                        color=p.get("color", ""),
-                        shape=p.get("shape", ""),
-                        quantity=p.get("quantity", 1),
-                        confidence=0.8  # Default confidence from VLM analysis
-                    )
-                    for p in image_analysis.get("detected_parts", [])
-                ]
+                try:
+                    logger.debug(f"Formatting image analysis with {len(image_analysis.get('detected_parts', []))} detected parts")
 
-                image_analysis_result = ImageAnalysisResult(
-                    detected_parts=detected_parts_formatted,
-                    confidence=image_analysis.get("step_confidence", 0.0),
-                    matched_node_ids=image_analysis.get("matched_node_ids", []),
-                    unmatched_parts=[]  # Could add logic to identify unmatched parts
-                )
+                    # Convert detected parts to DetectedPart schema
+                    detected_parts_formatted = []
+                    for p in image_analysis.get("detected_parts", []):
+                        try:
+                            detected_part = DetectedPart(
+                                description=p.get("description", ""),
+                                color=p.get("color", ""),
+                                shape=p.get("shape", ""),
+                                quantity=p.get("quantity", 1),
+                                confidence=0.8  # Default confidence from VLM analysis
+                            )
+                            detected_parts_formatted.append(detected_part)
+                        except Exception as e:
+                            logger.error(f"Failed to format detected part: {p}. Error: {e}")
+                            # Skip this part and continue
+
+                    matched_node_ids = image_analysis.get("matched_node_ids", [])
+                    # Ensure all node IDs are strings
+                    matched_node_ids = [str(nid) for nid in matched_node_ids]
+
+                    image_analysis_result = ImageAnalysisResult(
+                        detected_parts=detected_parts_formatted,
+                        confidence=image_analysis.get("step_confidence", 0.0),
+                        matched_node_ids=matched_node_ids,
+                        unmatched_parts=[]  # Could add logic to identify unmatched parts
+                    )
+                    logger.info(f"✓ Formatted image analysis result with {len(detected_parts_formatted)} parts")
+                except Exception as e:
+                    logger.error(f"Error formatting image analysis result: {e}", exc_info=True)
+                    # Set to None if formatting fails
+                    image_analysis_result = None
 
             # Step 7: Return comprehensive response with image analysis
-            return QueryResponse(
+            logger.info(f"Building QueryResponse with {len(sources)} sources")
+            response = QueryResponse(
                 answer=answer,
                 sources=sources,
                 current_step=current_step,
                 next_step=next_step,
                 image_analysis=image_analysis_result
             )
-            
+            logger.info(f"✓ Successfully built QueryResponse")
+            return response
+
         except Exception as e:
-            logger.error(f"Error in RAG pipeline: {e}")
+            logger.error(f"Error in RAG pipeline: {e}", exc_info=True)
             return QueryResponse(
                 answer="I encountered an error processing your query. Please try again.",
                 sources=[]
