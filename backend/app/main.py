@@ -546,6 +546,42 @@ async def get_step(
 
 # ==================== Manual Management ====================
 
+@app.get("/api/debug/files")
+async def inspect_output_directory():
+    """
+    Debug endpoint to inspect output directory structure.
+    Lists all files and directories in the output folder.
+    """
+    try:
+        output_dir = Path(settings.output_dir)
+
+        if not output_dir.exists():
+            return {
+                "error": "Output directory does not exist",
+                "path": str(output_dir.resolve())
+            }
+
+        files_list = []
+
+        # Walk through directory
+        for item in output_dir.rglob("*"):
+            relative_path = item.relative_to(output_dir)
+            files_list.append({
+                "path": str(relative_path),
+                "type": "directory" if item.is_dir() else "file",
+                "size": item.stat().st_size if item.is_file() else None
+            })
+
+        return {
+            "output_directory": str(output_dir.resolve()),
+            "total_items": len(files_list),
+            "files": sorted(files_list, key=lambda x: x["path"])
+        }
+    except Exception as e:
+        logger.error(f"Error inspecting output directory: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/vector-store/inspect")
 async def inspect_vector_store(
     manual_id: Optional[str] = None,
