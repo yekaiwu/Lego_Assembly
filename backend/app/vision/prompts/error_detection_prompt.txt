@@ -1,0 +1,108 @@
+Compare the DETECTED assembly state with the EXPECTED state and identify any discrepancies or errors.
+
+CONTEXT:
+- Manual ID: {{manual_id}}
+- Current step: {{current_step}}
+- Expected step: {{expected_step}}
+
+DETECTED STATE:
+{{detected_state}}
+
+EXPECTED STATE:
+{{expected_state}}
+
+Analyze and return errors in JSON format:
+
+{
+  "errors": [
+    {
+      "type": "part_sequencing_error|missing_connection|orientation_error|incomplete_subassembly|wrong_part|missing_part",
+      "severity": "error|warning|info",
+      "title": "brief title (e.g., 'Part from future step detected')",
+      "message": "detailed explanation of the error",
+      "suggested_fix": "specific actionable fix (e.g., 'Remove the red 2x4 brick. It will be used in step 12.')",
+      "confidence": <0.0-1.0>,
+      "affected_parts": ["list of part descriptions involved in error"]
+    }
+  ],
+  "overall_assessment": "brief summary of assembly state",
+  "confidence": <0.0-1.0>
+}
+
+ERROR TYPES TO CHECK (in priority order):
+
+1. **PART SEQUENCING ERROR** (severity: error)
+   - Detected parts that shouldn't appear until later steps
+   - Example: "Red 2x4 brick detected, but this part isn't used until step 12. Currently at step 7."
+   - Fix: "Remove this part for now. It will be used later."
+
+2. **MISSING PART** (severity: warning/error)
+   - Required parts for current step not visible
+   - Consider occlusion (parts might be hidden)
+   - Example: "Black wheel hub required for step 5 not detected"
+   - Fix: "Add the missing black wheel hub to complete this step."
+
+3. **MISSING CONNECTION** (severity: warning)
+   - Parts present but not properly connected
+   - Compare expected connections to detected connections
+   - Example: "Blue plate should be connected to black base, but connection not detected"
+   - Fix: "Ensure blue plate is firmly pressed onto black base studs."
+
+4. **INCOMPLETE SUBASSEMBLY** (severity: warning)
+   - Subassembly partially built but missing components
+   - Example: "Wheel assembly missing 1 of 3 required parts (missing: black hub)"
+   - Fix: "Add black hub piece to center of wheel assembly."
+
+5. **ORIENTATION ERROR** (severity: warning)
+   - Part or subassembly oriented incorrectly
+   - Example: "Wheel assembly appears rotated 90 degrees from expected orientation"
+   - Fix: "Rotate wheel assembly so axle runs left-to-right."
+
+6. **WRONG PART** (severity: error)
+   - Incorrect part used (wrong color or shape)
+   - Example: "Red 2x4 brick used, but blue 2x4 brick expected"
+   - Fix: "Replace red brick with blue brick as shown in manual."
+
+GUIDELINES:
+- Report errors in priority order (errors before warnings)
+- Limit to TOP 3 most important errors
+- Be SPECIFIC: include part descriptions, colors, step numbers
+- Provide ACTIONABLE fixes, not vague suggestions
+- Use SOFT LANGUAGE for uncertainty: "appears to be" vs "is"
+- Consider OCCLUSION: parts might be present but hidden
+- Set confidence based on image clarity and certainty
+
+FALSE POSITIVE MITIGATION:
+- Only flag errors with confidence > 0.6
+- Allow for partial occlusion (part might be there but hidden)
+- Consider alternative valid builds (some manuals have variations)
+- If uncertain, lower severity from "error" to "warning"
+
+EXAMPLE OUTPUT:
+{
+  "errors": [
+    {
+      "type": "part_sequencing_error",
+      "severity": "error",
+      "title": "Part from future step detected",
+      "message": "Red 2x4 brick detected, but this part isn't used until step 12. You are currently at step 7.",
+      "suggested_fix": "Remove the red 2x4 brick for now. It will be needed later in step 12.",
+      "confidence": 0.85,
+      "affected_parts": ["red 2x4 brick"]
+    },
+    {
+      "type": "missing_connection",
+      "severity": "warning",
+      "title": "Connection may be loose",
+      "message": "Blue plate should be firmly connected to black base, but connection appears loose or missing.",
+      "suggested_fix": "Ensure blue plate is firmly pressed down onto the studs of the black base plate.",
+      "confidence": 0.70,
+      "affected_parts": ["blue 2x4 plate", "black 4x6 base plate"]
+    }
+  ],
+  "overall_assessment": "Assembly is progressing but has 1 critical error (part from wrong step) and 1 potential issue (loose connection). Overall structure appears correct.",
+  "confidence": 0.75
+}
+
+ANALYZE CAREFULLY and provide HELPFUL, SPECIFIC feedback.
+

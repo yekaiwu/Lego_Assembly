@@ -1,0 +1,82 @@
+{{context_section}}CURRENT TASK:
+{{task_description}}Return a JSON ARRAY containing ALL steps found on this page:
+
+[
+  {
+    "step_number": <number or null>,
+    "parts_required": [
+      {
+        "description": "part description",
+        "color": "color name",
+        "shape": "brick type and dimensions",
+        "quantity": <number>,
+        "sam3_prompt": "simple visual description for image segmentation"
+      }
+    ],
+    "existing_assembly": "description of already assembled parts shown",
+    "assembled_product": {
+      "sam3_prompt": "simple visual description of the complete assembled result"
+    },
+    "actions": [
+      {
+        "action_verb": "attach|connect|place|align|rotate",
+        "target": "what is being attached",
+        "destination": "where it's being attached",
+        "orientation": "directional cues"
+      }
+    ],
+{{spatial_schema}}    "dependencies": "which previous steps are prerequisites",
+    "notes": "any special instructions or warnings",
+
+    "subassembly_hint": {
+      "is_new_subassembly": true/false,
+      "name": "descriptive name if new (e.g., 'wheel_assembly')",
+      "description": "what is being built (e.g., '4-wheel chassis')",
+      "continues_previous": true/false
+    }
+  }
+]
+
+IMPORTANT INSTRUCTIONS:
+1. Look carefully - the page may show 1, 2, or more steps (typically identified by step numbers in the image)
+2. Return ALL steps as an array, even if there's only one step
+3. Consider the build context and recent steps when analyzing
+4. Determine if each step starts a new subassembly or continues the current one
+5. Focus on what's NEW in each step, not what was already built
+
+SAM3_PROMPT GENERATION (CRITICAL FOR IMAGE SEGMENTATION):
+For each "sam3_prompt" field (both parts and assembled product), create SIMPLE, VISUAL descriptions:
+- ALWAYS include "LEGO" or "LEGO brick/piece" in the description
+- ALWAYS mention the color first: "red LEGO brick", "blue LEGO piece"
+- Use GENERAL shapes: brick, plate, slope, sloped, round, flat, tile
+- AVOID technical terms: 2x4, 1x1, modified, with studs, specialized
+- AVOID complex descriptions or multiple clauses
+- Keep it 3-6 words maximum
+- Think: "What would help a computer vision model find this in the image?"
+
+GOOD sam3_prompt examples:
+✓ "tan rectangular LEGO brick"
+✓ "brown sloped LEGO piece"
+✓ "red round LEGO piece"
+✓ "blue flat LEGO plate"
+✓ "assembled LEGO dog body"
+✓ "small brown LEGO structure"
+
+BAD sam3_prompt examples (DO NOT USE THESE):
+✗ "2x4 tan brick with 8 studs"
+✗ "brown slope brick 45 degrees 2x1"
+✗ "modified brick with side studs"
+✗ "structure from previous steps"
+
+RESPONSE CONSTRAINTS (CRITICAL):
+- Keep descriptions CONCISE (max 10-15 words per field, except sam3_prompt which is max 6 words)
+- Use short phrases, not full sentences
+- Prioritize accuracy over detail
+- If information is unclear, mark as null or "unclear"
+- Limit "actions" array to 3 most important actions per step
+- Keep "existing_assembly" under 20 words
+- Return ONLY the JSON array, no additional text
+
+Example formats:
+- One step on page: [{"step_number": 1, "parts_required": [{"description": "2x4 brick", "color": "tan", "shape": "rectangular brick", "quantity": 1, "sam3_prompt": "tan rectangular LEGO brick"}], "assembled_product": {"sam3_prompt": "tan LEGO brick"}, ...}]
+- Two steps on page: [{"step_number": 1, ...}, {"step_number": 2, ...}]

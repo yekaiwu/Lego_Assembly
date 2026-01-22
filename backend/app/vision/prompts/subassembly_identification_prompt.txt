@@ -1,0 +1,79 @@
+Analyze this LEGO instruction manual step and determine if it creates a SUBASSEMBLY.
+
+STEP NUMBER: {{step_number}}
+
+A SUBASSEMBLY is a distinct functional unit that:
+- Combines multiple parts into a cohesive structure (e.g., wheel assembly, wing, base frame)
+- Serves a specific purpose within the larger model
+- May be attached to other parts/subassemblies in later steps
+
+Return results as JSON:
+{
+  "is_subassembly": <true|false>,
+  "subassembly_info": {
+    "name": "descriptive name (e.g., 'Front Wheel Assembly', 'Vehicle Base')",
+    "purpose": "functional description (e.g., 'Provides mobility', 'Structural foundation')",
+    "component_parts": [
+      "color:shape signature of each part (e.g., 'black:wheel', 'grey:axle')"
+    ],
+    "parent_structure": "what this subassembly attaches to (null if top-level)",
+    "completeness_check": {
+      "required_parts_count": <number of parts needed>,
+      "required_connections": ["part_a->part_b description of key connections"],
+      "spatial_signature": "overall shape/arrangement (e.g., 'circular with axle through center')"
+    }
+  },
+  "reasoning": "explain why this is or isn't a subassembly",
+  "confidence": <0.0-1.0>
+}
+
+SUBASSEMBLY DETECTION CRITERIA:
+1. **Functional Grouping**: Parts that work together (wheel + axle + hub = wheel assembly)
+2. **Spatial Clustering**: Parts physically connected and remain together in subsequent steps
+3. **Reusable Patterns**: Symmetric structures (e.g., left/right wheels, multiple legs)
+4. **Completion Keywords**: Step notes mention "complete", "assembly", "attach to"
+
+EXAMPLES OF SUBASSEMBLIES:
+- Wheel assemblies (wheel + axle + mounting bracket)
+- Wings/tail sections (structural frame + decorative tiles)
+- Base plates with mounted components
+- Door/window frames
+- Functional mechanisms (hinges, rotating parts)
+
+NOT SUBASSEMBLIES:
+- Single parts being added
+- Two small pieces connecting without forming distinct unit
+- Decorative elements added to existing structure
+
+IMPORTANT:
+- Focus on FUNCTIONAL groupings, not just any connected parts
+- Consider if this group of parts will be referenced as a unit later
+- Check if parts form a complete, recognizable structure
+- Use standard LEGO terminology
+
+EXAMPLE OUTPUT (IS SUBASSEMBLY):
+{
+  "is_subassembly": true,
+  "subassembly_info": {
+    "name": "Front Wheel Assembly",
+    "purpose": "Provides mobility for front of vehicle",
+    "component_parts": ["black:wheel 2x2", "grey:axle 4", "red:bracket 1x2"],
+    "parent_structure": "vehicle base",
+    "completeness_check": {
+      "required_parts_count": 3,
+      "required_connections": ["wheel->axle", "axle->bracket", "bracket->base"],
+      "spatial_signature": "circular wheel with axle through center, mounted on bracket"
+    }
+  },
+  "reasoning": "Step combines wheel, axle, and mounting bracket into functional mobility unit",
+  "confidence": 0.95
+}
+
+EXAMPLE OUTPUT (NOT SUBASSEMBLY):
+{
+  "is_subassembly": false,
+  "subassembly_info": null,
+  "reasoning": "Step only adds single decorative tile to existing wall, does not form distinct functional unit",
+  "confidence": 0.90
+}
+

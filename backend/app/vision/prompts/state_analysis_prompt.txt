@@ -1,0 +1,91 @@
+Analyze these photos of a partially-built LEGO model carefully and extract detailed information about the current assembly state.
+
+CONTEXT:
+- Manual ID: {{manual_id}}
+- Expected current step: {{expected_step}} (if known)
+- Total steps: {{total_steps}} (if known)
+
+Extract the following information in JSON format:
+
+{
+  "detected_parts": [
+    {
+      "description": "detailed part description",
+      "color": "exact color name (red, blue, yellow, black, white, etc.)",
+      "shape": "brick type and dimensions (e.g., '2x4 brick', '1x2 plate', '1x1 tile')",
+      "part_id": "LEGO part ID if identifiable (e.g., 3001, 3004)",
+      "quantity": <number of this part visible>,
+      "location": "where this part is located (top, bottom, left side, front, back, etc.)",
+      "confidence": <0.0-1.0 confidence score>
+    }
+  ],
+  "assembled_structures": [
+    {
+      "description": "detailed description of assembled structure or subassembly",
+      "component_parts": ["list of parts that make up this structure"],
+      "size": "approximate dimensions in studs or descriptive (small, medium, large)",
+      "completeness": "complete|partial|incomplete - assessment with reasoning",
+      "orientation": "how structure is oriented (front-facing, upside-down, rotated, etc.)"
+    }
+  ],
+  "connections": [
+    {
+      "part_a": "description of first part",
+      "part_b": "description of second part", 
+      "connection_type": "stud_connection|clip|axle_through|stacked|side_by_side|other",
+      "connection_quality": "firmly attached|loose|unclear",
+      "orientation": "relative orientation (perpendicular, parallel, angled)"
+    }
+  ],
+  "spatial_layout": {
+    "overall_shape": "description of overall assembly shape",
+    "dimensions": "approximate size in LEGO studs or descriptive size",
+    "front_view": "what's visible from front angle",
+    "top_view": "what's visible from top angle",
+    "side_view": "what's visible from side (if multiple images provided)",
+    "complexity": "simple|moderate|complex"
+  },
+  "assembly_status": {
+    "appears_complete": <true|false>,
+    "notable_features": ["list of distinctive features or subassemblies visible"],
+    "potential_issues": ["any visible problems: loose connections, wrong orientation, missing parts"]
+  },
+  "confidence": <overall confidence 0.0-1.0>,
+  "notes": "any special observations, unclear areas, or recommendations for better photos"
+}
+
+IMPORTANT GUIDELINES:
+1. **Part Identification**:
+   - Be SPECIFIC about colors (use "dark grey" not just "grey", "bright red" vs "dark red")
+   - Use standard LEGO terminology: brick (has studs on top), plate (1/3 height), tile (no studs)
+   - Include dimensions: "2x4" means 2 studs wide x 4 long
+   - If part numbers are visible molded into pieces, include them
+
+2. **Subassembly Detection**:
+   - Identify FUNCTIONAL GROUPS of parts (wheel assemblies, base structures, etc.)
+   - Describe purpose of each subassembly
+   - Assess completeness based on symmetry and structural logic
+
+3. **Connection Analysis**:
+   - Be specific about HOW parts connect (studs, clips, axles, etc.)
+   - Note connection quality: "firmly pressed together" vs "loosely attached"
+   - Include orientation: "brick stacked on top of plate" vs "attached to side"
+
+4. **Multi-View Synthesis**:
+   - If multiple images provided, synthesize information from ALL views
+   - Note what's visible from each angle
+   - Use multiple views to assess 3D structure
+
+5. **Confidence Scoring**:
+   - High (0.8-1.0): Clear photos, good lighting, all parts identifiable
+   - Medium (0.5-0.8): Some occlusion or lighting issues, most parts identifiable  
+   - Low (0.0-0.5): Poor lighting, heavy occlusion, uncertain identification
+
+6. **Error Detection Hints**:
+   - Note any parts that appear upside-down or backwards
+   - Identify loose connections or unstable structures
+   - Flag parts that don't seem to fit with surrounding pieces
+   - Mention if certain areas are unclear and need better photos
+
+ANALYZE THOROUGHLY and provide ACCURATE, DETAILED results.
+

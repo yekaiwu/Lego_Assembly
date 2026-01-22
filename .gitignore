@@ -80,6 +80,8 @@ output/
 *.txt
 # Exception: requirements.txt needed for Railway deployment
 !requirements.txt
+# Exception: vision prompt templates needed for state analysis
+!backend/app/vision/prompts/*.txt
 
 # OS
 .DS_Store
