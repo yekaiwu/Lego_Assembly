@@ -20,8 +20,20 @@ from loguru import logger
 class ManualInputHandler:
     """Handles LEGO instruction manual input processing."""
     
-    def __init__(self, output_dir: Optional[Path] = None):
-        self.output_dir = output_dir or Path("./temp_manual_pages")
+    def __init__(self, output_dir: Optional[Path] = None, manual_id: Optional[str] = None):
+        """
+        Initialize manual input handler.
+        
+        Args:
+            output_dir: Base output directory (will create temp_pages/{manual_id}/ inside)
+            manual_id: Manual identifier for organizing files by manual
+        """
+        if manual_id and output_dir:
+            # Organize by manual_id: output/temp_pages/{manual_id}/
+            self.output_dir = output_dir / "temp_pages" / manual_id
+        else:
+            # Fallback to old behavior for backward compatibility
+            self.output_dir = output_dir or Path("./temp_manual_pages")
         self.output_dir.mkdir(parents=True, exist_ok=True)
     
     def process_manual(self, input_path: Union[str, Path]) -> List[str]:

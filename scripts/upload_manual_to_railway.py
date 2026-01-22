@@ -10,6 +10,7 @@ Example:
 """
 
 import sys
+import os
 import requests
 from pathlib import Path
 from typing import Optional
@@ -26,17 +27,18 @@ def upload_manual(manual_id: str, railway_url: str, output_dir: Path = Path("./o
     # Remove trailing slash from URL
     railway_url = railway_url.rstrip('/')
     
-    # Required files
+    # Required files (now in manual_id subdirectory)
+    manual_dir = output_dir / manual_id
     required_files = {
-        'extracted_json': output_dir / f"{manual_id}_extracted.json",
-        'plan_json': output_dir / f"{manual_id}_plan.json",
-        'dependencies_json': output_dir / f"{manual_id}_dependencies.json",
+        'extracted_json': manual_dir / f"{manual_id}_extracted.json",
+        'plan_json': manual_dir / f"{manual_id}_plan.json",
+        'dependencies_json': manual_dir / f"{manual_id}_dependencies.json",
     }
     
     # Optional files
     optional_files = {
-        'plan_txt': output_dir / f"{manual_id}_plan.txt",
-        'graph_json': output_dir / f"{manual_id}_graph.json",
+        'plan_txt': manual_dir / f"{manual_id}_plan.txt",
+        'graph_json': manual_dir / f"{manual_id}_graph.json",
     }
     
     # Check required files exist
@@ -47,34 +49,43 @@ def upload_manual(manual_id: str, railway_url: str, output_dir: Path = Path("./o
         sys.exit(1)
     
     # Prepare files for upload
-    files = {}
+    # Use list of tuples to support multiple files with same field name
+    files = []
+
+    # Add required JSON files (single file per field)
     for key, path in required_files.items():
-        files[key] = (path.name, open(path, 'rb'), 'application/json')
+        files.append((key, (path.name, open(path, 'rb'), 'application/json')))
         print(f"✓ Found {path.name}")
-    
+
+    # Add optional JSON files (single file per field)
     for key, path in optional_files.items():
         if path.exists():
-            files[key] = (path.name, open(path, 'rb'), 'application/json')
+            files.append((key, (path.name, open(path, 'rb'), 'application/json')))
             print(f"✓ Found {path.name} (optional)")
-    
-    # Upload images from temp_pages
-    temp_pages_dir = output_dir / "temp_pages"
-    image_files = []
+
+    # Upload images from temp_pages/{manual_id}/
+    # For multiple files with same field name, add each as a separate tuple
+    temp_pages_dir = output_dir / "temp_pages" / manual_id
     if temp_pages_dir.exists():
         for img_path in sorted(temp_pages_dir.glob("page_*.png")):
-            image_files.append(('images', (img_path.name, open(img_path, 'rb'), 'image/png')))
+            files.append(('images', (img_path.name, open(img_path, 'rb'), 'image/png')))
             print(f"✓ Found image: {img_path.name}")
-    
-    # Add images to files dict
-    if image_files:
-        files['images'] = image_files
     
     # Upload to Railway
     upload_url = f"{railway_url}/api/upload/manual/{manual_id}"
     print(f"\n📤 Uploading to: {upload_url}")
     
+    # Prepare authentication headers
+    headers = {}
+    admin_token = os.getenv("ADMIN_TOKEN")
+    if admin_token:
+        headers["Authorization"] = f"Bearer {admin_token}"
+    else:
+        print("⚠️  Warning: ADMIN_TOKEN not set. Upload may fail if authentication is required.")
+        print("   Set it with: export ADMIN_TOKEN='your-token-here'")
+    
     try:
-        response = requests.post(upload_url, files=files, timeout=300)
+        response = requests.post(upload_url, files=files, headers=headers, timeout=300)
         response.raise_for_status()
         
         result = response.json()
@@ -82,7 +93,10 @@ def upload_manual(manual_id: str, railway_url: str, output_dir: Path = Path("./o
         print(f"   Uploaded {len(result['uploaded_files'])} files")
         print(f"   Manual ID: {result['manual_id']}")
         print(f"\n📝 Next step: Ingest the manual")
-        print(f"   curl -X POST {railway_url}/api/ingest/manual/{manual_id}")
+        if admin_token:
+            print(f"   curl -X POST -H \"Authorization: Bearer $ADMIN_TOKEN\" {railway_url}/api/ingest/manual/{manual_id}")
+        else:
+            print(f"   curl -X POST -H \"Authorization: Bearer <your-token>\" {railway_url}/api/ingest/manual/{manual_id}")
         print(f"   Or use the frontend to trigger ingestion")
         
         return result
@@ -94,14 +108,10 @@ def upload_manual(manual_id: str, railway_url: str, output_dir: Path = Path("./o
         sys.exit(1)
     finally:
         # Close all file handles
-        for file_data in files.values():
-            if isinstance(file_data, tuple):
-                if isinstance(file_data[1], tuple):  # images list
-                    for img_tuple in file_data:
-                        if len(img_tuple) == 3:
-                            img_tuple[1][1].close()
-                else:
-                    file_data[1].close()
+        for field_name, file_tuple in files:
+            # file_tuple is (filename, fileobj, content_type)
+            if isinstance(file_tuple, tuple) and len(file_tuple) >= 2:
+                file_tuple[1].close()  # Close the file object
 
 
 if __name__ == "__main__":
