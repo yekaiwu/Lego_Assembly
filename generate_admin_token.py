@@ -14,6 +14,11 @@ The token will be printed to console and saved to .admin_token.txt (gitignored)
 import sys
 from pathlib import Path
 from datetime import timedelta
+from dotenv import load_dotenv
+
+# Load .env file BEFORE importing app.auth (so JWT_SECRET_KEY is available)
+env_path = Path(__file__).parent / ".env"
+load_dotenv(env_path)
 
 # Add backend to path
 sys.path.insert(0, str(Path(__file__).parent / "backend"))
