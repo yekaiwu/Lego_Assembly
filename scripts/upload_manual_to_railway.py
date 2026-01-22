@@ -66,11 +66,26 @@ def upload_manual(manual_id: str, railway_url: str, output_dir: Path = Path("./o
     # Upload images from temp_pages/{manual_id}/
     # For multiple files with same field name, add each as a separate tuple
     temp_pages_dir = output_dir / "temp_pages" / manual_id
+    image_count = 0
     if temp_pages_dir.exists():
         for img_path in sorted(temp_pages_dir.glob("page_*.png")):
             files.append(('images', (img_path.name, open(img_path, 'rb'), 'image/png')))
-            print(f"✓ Found image: {img_path.name}")
-    
+            image_count += 1
+        print(f"✓ Found {image_count} step images")
+
+    # Upload segmented part images from segmented_parts/{manual_id}/
+    segmented_parts_dir = output_dir / "segmented_parts" / manual_id
+    segmented_count = 0
+    if segmented_parts_dir.exists():
+        for step_dir in sorted(segmented_parts_dir.glob("step_*")):
+            if step_dir.is_dir():
+                for img_path in sorted(step_dir.glob("*.png")):
+                    # Preserve directory structure: step_XXX/filename.png
+                    relative_path = f"{step_dir.name}/{img_path.name}"
+                    files.append(('segmented_parts', (relative_path, open(img_path, 'rb'), 'image/png')))
+                    segmented_count += 1
+        print(f"✓ Found {segmented_count} segmented part images")
+
     # Upload to Railway
     upload_url = f"{railway_url}/api/upload/manual/{manual_id}"
     print(f"\n📤 Uploading to: {upload_url}")
