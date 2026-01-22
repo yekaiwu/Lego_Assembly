@@ -252,6 +252,7 @@ async def upload_manual_files(
     plan_txt: UploadFile = File(None, description="plan.txt file (optional)"),
     graph_json: UploadFile = File(None, description="graph.json file (optional)"),
     images: List[UploadFile] = File(None, description="Step images (temp_pages/*.png)"),
+    segmented_parts: List[UploadFile] = File(None, description="Segmented part images (segmented_parts/step_*/*.png)"),
     admin: Dict = Depends(require_admin)
 ):
     """
@@ -319,6 +320,32 @@ async def upload_manual_files(
                 with open(file_path, "wb") as f:
                     shutil.copyfileobj(image.file, f)
                 uploaded_files.append(f"temp_pages/{manual_id}/{safe_filename}")
+
+        # Validate and upload segmented part images (to segmented_parts/{manual_id}/)
+        if segmented_parts:
+            segmented_base_dir = output_dir / "segmented_parts" / manual_id
+            segmented_base_dir.mkdir(parents=True, exist_ok=True)
+
+            for part_image in segmented_parts:
+                await validate_image_upload(part_image)
+                # Filename should be in format: step_XXX/filename.png
+                original_filename = part_image.filename or "unknown.png"
+
+                # Parse step directory from filename (e.g., "step_001/part.png")
+                if "/" in original_filename:
+                    step_dir_name, filename = original_filename.split("/", 1)
+                    step_dir = segmented_base_dir / sanitize_filename(step_dir_name)
+                    step_dir.mkdir(parents=True, exist_ok=True)
+                    safe_filename = sanitize_filename(filename)
+                    file_path = step_dir / safe_filename
+                else:
+                    # Fallback: save to root if no directory structure
+                    safe_filename = sanitize_filename(original_filename)
+                    file_path = segmented_base_dir / safe_filename
+
+                with open(file_path, "wb") as f:
+                    shutil.copyfileobj(part_image.file, f)
+                uploaded_files.append(f"segmented_parts/{manual_id}/{original_filename}")
 
         security_logger.info(f"File upload completed for manual {manual_id}: {len(uploaded_files)} files")
 
