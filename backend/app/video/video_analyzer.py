@@ -93,6 +93,27 @@ class VideoAnalyzer:
         video_file = genai.upload_file(video_path)
         logger.info(f"Video uploaded: {video_file.name}")
 
+        # Wait for video to be processed by Gemini
+        import time
+        logger.info("Waiting for video to be processed...")
+        max_wait_time = 300  # 5 minutes
+        wait_interval = 2  # Check every 2 seconds
+        elapsed_time = 0
+
+        while video_file.state.name == "PROCESSING":
+            if elapsed_time >= max_wait_time:
+                raise TimeoutError(f"Video processing timeout after {max_wait_time}s")
+
+            time.sleep(wait_interval)
+            elapsed_time += wait_interval
+            video_file = genai.get_file(video_file.name)
+            logger.debug(f"Video state: {video_file.state.name} (waited {elapsed_time}s)")
+
+        if video_file.state.name == "FAILED":
+            raise RuntimeError(f"Video processing failed: {video_file.state}")
+
+        logger.info(f"Video ready for analysis (state: {video_file.state.name}, waited {elapsed_time}s)")
+
         # Upload reference images if provided
         uploaded_images = []
         if reference_images:
@@ -100,7 +121,18 @@ class VideoAnalyzer:
             for img_path in reference_images[:10]:  # Limit to first 10 steps
                 if Path(img_path).exists():
                     img_file = genai.upload_file(img_path)
-                    uploaded_images.append(img_file)
+
+                    # Wait for image processing (usually fast, but needed for safety)
+                    wait_time = 0
+                    while img_file.state.name == "PROCESSING" and wait_time < 60:
+                        time.sleep(1)
+                        wait_time += 1
+                        img_file = genai.get_file(img_file.name)
+
+                    if img_file.state.name == "ACTIVE":
+                        uploaded_images.append(img_file)
+                    else:
+                        logger.warning(f"Image {img_path} not ready (state: {img_file.state.name}), skipping")
 
         # Build prompt with manual context
         # Note: Don't pass full dependencies graph to avoid bloating prompt
