@@ -4,6 +4,7 @@ Determines progress, identifies errors, and maps current position in build seque
 """
 
 import json
+import math
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 from loguru import logger
@@ -11,9 +12,10 @@ from loguru import logger
 
 class StateComparator:
     """Compares detected state with expected assembly plan."""
-    
+
     def __init__(self):
         """Initialize state comparator."""
+        self._part_idf_cache = {}  # Cache for IDF scores per manual
         logger.info("StateComparator initialized")
     
     def compare_with_plan(
@@ -54,9 +56,12 @@ class StateComparator:
             # Extract detected parts
             detected_parts = detected_state.get("detected_parts", [])
 
-            # Use part-based step estimation
-            logger.info("Using part-based step estimation")
-            matched_steps = self._match_steps(detected_parts, plan_data["extracted_steps"])
+            # Compute IDF scores for TF-IDF weighted matching
+            part_idf_scores = self._compute_part_idf_scores(manual_id, plan_data["extracted_steps"])
+
+            # Use TF-IDF weighted part-based step estimation
+            logger.info("Using TF-IDF weighted part matching")
+            matched_steps = self._match_steps(detected_parts, plan_data["extracted_steps"], part_idf_scores)
             completed_steps = matched_steps["completed_steps"]
             current_step = matched_steps["current_step"]
             
@@ -156,45 +161,105 @@ class StateComparator:
         except Exception as e:
             logger.error(f"Error loading plan data: {e}")
             return None
-    
+
+    def _compute_part_idf_scores(
+        self,
+        manual_id: str,
+        expected_steps: List[Dict[str, Any]]
+    ) -> Dict[str, float]:
+        """
+        Compute IDF (Inverse Document Frequency) scores for parts.
+
+        In TF-IDF terms:
+        - Document = Step
+        - Term = Part (color:shape signature)
+        - IDF = log(total_steps / steps_containing_part)
+
+        Higher IDF = rarer part = more discriminative for matching
+
+        Args:
+            manual_id: Manual identifier (for caching)
+            expected_steps: All steps in the manual
+
+        Returns:
+            Dictionary mapping part signature to IDF score
+        """
+        # Check cache
+        if manual_id in self._part_idf_cache:
+            return self._part_idf_cache[manual_id]
+
+        logger.info(f"Computing IDF scores for manual {manual_id}")
+
+        # Count how many steps each part appears in (Document Frequency)
+        part_df = {}  # part_signature -> number of steps it appears in
+        total_steps = len(expected_steps)
+
+        for step in expected_steps:
+            parts_in_step = set()
+            for part in step.get('parts_required', []):
+                color = part.get('color', '').lower()
+                shape = part.get('shape', '').lower()
+                signature = f"{color}:{shape}"
+                parts_in_step.add(signature)
+
+            # Increment DF for each unique part in this step
+            for sig in parts_in_step:
+                part_df[sig] = part_df.get(sig, 0) + 1
+
+        # Compute IDF scores
+        part_idf = {}
+        for signature, df in part_df.items():
+            # IDF = log(total_steps / df)
+            # Add 1 to avoid division by zero and smooth the scores
+            idf = math.log((total_steps + 1) / (df + 1))
+            part_idf[signature] = idf
+            logger.debug(f"  {signature}: appears in {df}/{total_steps} steps, IDF={idf:.3f}")
+
+        # Cache the results
+        self._part_idf_cache[manual_id] = part_idf
+
+        logger.info(f"Computed IDF scores for {len(part_idf)} unique parts")
+        return part_idf
+
     def _match_steps(
         self,
         detected_parts: List[Dict[str, Any]],
-        expected_steps: List[Dict[str, Any]]
+        expected_steps: List[Dict[str, Any]],
+        part_idf_scores: Dict[str, float]
     ) -> Dict[str, Any]:
         """
-        Match detected parts to expected steps to determine progress.
-        Uses BOTH simple part matching AND graph-aware subassembly matching.
-        
+        Match detected parts to expected steps using TF-IDF weighted scoring.
+
         Args:
             detected_parts: Parts detected in user's assembly
             expected_steps: Steps from Phase 1 extracted data
-        
+            part_idf_scores: IDF scores for part rarity weighting
+
         Returns:
             Dictionary with completed_steps and current_step
         """
         completed_steps = []
-        
+
         # Create a simplified representation of detected parts for matching
         detected_summary = self._create_part_summary(detected_parts)
-        
+
         # Check each step to see if it's completed
         for i, step in enumerate(expected_steps):
             step_number = step.get("step_number") or i + 1
-            
+
             # Skip non-build steps (warnings, info pages, etc.)
             if not step.get("parts_required"):
                 continue
-            
-            # Check if this step's parts are present in detected state
+
+            # Check if this step's parts are present in detected state using weighted matching
             expected_parts = step.get("parts_required", [])
-            
-            if self._step_parts_present(expected_parts, detected_summary):
+
+            if self._step_parts_present_weighted(expected_parts, detected_summary, part_idf_scores):
                 completed_steps.append(step_number)
-        
+
         # Current step is the next step after the last completed
         current_step = max(completed_steps) + 1 if completed_steps else 1
-        
+
         return {
             "completed_steps": completed_steps,
             "current_step": current_step,
@@ -379,43 +444,122 @@ class StateComparator:
         
         return summary
     
+    def _step_parts_present_weighted(
+        self,
+        expected_parts: List[Dict[str, Any]],
+        detected_summary: Dict[str, int],
+        part_idf_scores: Dict[str, float]
+    ) -> bool:
+        """
+        Check if expected parts for a step are present using TF-IDF weighted matching.
+
+        Instead of simple counting, weights parts by their rarity (IDF scores).
+        This prevents common parts from dominating the match score.
+
+        Also validates part count to prevent false positives when detected parts
+        significantly exceed expected parts (e.g., detecting 6 parts for a 2-part step).
+
+        Args:
+            expected_parts: Parts required for step
+            detected_summary: Summary of detected parts
+            part_idf_scores: IDF scores for weighting parts by rarity
+
+        Returns:
+            True if step appears completed (weighted score >= threshold)
+        """
+        if not expected_parts:
+            return False
+
+        matched_weight = 0.0
+        total_weight = 0.0
+        total_detected_matching = 0  # Total count of detected parts matching expected signatures
+        total_expected_count = 0     # Total count of expected parts
+
+        for expected_part in expected_parts:
+            color = expected_part.get("color", "unknown").lower()
+            shape = expected_part.get("shape", "unknown").lower()
+            expected_qty = expected_part.get("quantity", 1)
+            total_expected_count += expected_qty
+
+            signature = f"{color}:{shape}"
+            detected_qty = detected_summary.get(signature, 0)
+
+            # Get IDF weight (default to 1.0 if not found)
+            idf = part_idf_scores.get(signature, 1.0)
+
+            # TF-IDF weight for this part type
+            # TF = quantity, IDF = rarity score
+            part_weight = expected_qty * idf
+            total_weight += part_weight
+
+            # Calculate match contribution
+            if detected_qty > 0:
+                # Partial credit based on quantity match
+                match_factor = min(detected_qty / expected_qty, 1.0)
+                matched_weight += part_weight * match_factor
+                total_detected_matching += detected_qty
+
+        # Compute weighted match ratio
+        match_ratio = matched_weight / total_weight if total_weight > 0 else 0
+
+        # Higher threshold (70%) to reduce false positives
+        # With TF-IDF, rare parts contribute more, so we need a higher threshold
+        threshold = 0.70
+
+        # Part count validation: prevent matching when detected parts far exceed expected
+        # If we detect 3x more parts than expected, it's likely we've progressed past this step
+        # Allow some tolerance (2x) for VLM over-detection, but not excessive amounts
+        part_count_ratio = total_detected_matching / total_expected_count if total_expected_count > 0 else 0
+        max_part_count_ratio = 2.5  # Allow up to 2.5x detected parts vs expected
+
+        if part_count_ratio > max_part_count_ratio:
+            logger.debug(f"  Part count validation failed: detected {total_detected_matching} vs expected {total_expected_count} (ratio: {part_count_ratio:.2f} > {max_part_count_ratio})")
+            return False
+
+        logger.debug(f"  Weighted match ratio: {match_ratio:.3f} (threshold: {threshold}), part count ratio: {part_count_ratio:.2f}")
+
+        return match_ratio >= threshold
+
     def _step_parts_present(
         self,
         expected_parts: List[Dict[str, Any]],
         detected_summary: Dict[str, int]
     ) -> bool:
         """
+        [DEPRECATED] Old non-weighted matching method.
+        Kept for backward compatibility but not used in main flow.
+
         Check if expected parts for a step are present in detected parts.
-        
+
         Args:
             expected_parts: Parts required for step
             detected_summary: Summary of detected parts
-        
+
         Returns:
             True if step appears completed
         """
         if not expected_parts:
             return False
-        
+
         # Check if at least 50% of expected parts are detected
         matched = 0
-        
+
         for expected_part in expected_parts:
             color = expected_part.get("color", "unknown").lower()
             shape = expected_part.get("shape", "unknown").lower()
             expected_qty = expected_part.get("quantity", 1)
-            
+
             signature = f"{color}:{shape}"
             detected_qty = detected_summary.get(signature, 0)
-            
+
             # If we have at least some of this part, count as partial match
             if detected_qty > 0:
                 matched += min(detected_qty, expected_qty)
-        
+
         # Consider step completed if 50%+ of parts are present
         total_expected = sum(p.get("quantity", 1) for p in expected_parts)
         match_ratio = matched / total_expected if total_expected > 0 else 0
-        
+
         return match_ratio >= 0.5
     
     def _detect_errors(

@@ -55,7 +55,7 @@ from .vision import get_state_analyzer, get_state_comparator, get_guidance_gener
 from .graph.graph_manager import get_graph_manager
 
 # Initialize rate limiter
-limiter = Limiter(key_func=get_remote_address, default_limits=["100/hour"])
+limiter = Limiter(key_func=get_remote_address, default_limits=["200/hour"])
 
 # Security audit logger
 security_logger = logger.bind(audit=True)
@@ -147,7 +147,7 @@ async def health_check():
 # ==================== Ingestion API ====================
 
 @app.post("/api/ingest/manual/{manual_id}", response_model=IngestionResponse)
-@limiter.limit("10/minute")
+@limiter.limit("20/minute")
 async def ingest_manual(
     request: Request,
     manual_id: str = PathParam(..., description="Manual identifier (e.g., 6454922)"),
@@ -186,7 +186,7 @@ async def ingest_manual(
 
 
 @app.post("/api/ingest/all")
-@limiter.limit("1/hour")
+@limiter.limit("2/hour")
 async def ingest_all_manuals(
     request: Request,
     admin: Dict = Depends(require_admin)
@@ -208,7 +208,7 @@ async def ingest_all_manuals(
 
 
 @app.delete("/api/manual/{manual_id}")
-@limiter.limit("5/hour")
+@limiter.limit("10/hour")
 async def delete_manual(
     request: Request,
     manual_id: str = PathParam(..., description="Manual identifier"),
@@ -242,7 +242,7 @@ async def delete_manual(
 
 
 @app.post("/api/upload/manual/{manual_id}")
-@limiter.limit("20/hour")
+@limiter.limit("40/hour")
 async def upload_manual_files(
     request: Request,
     manual_id: str = PathParam(..., description="Manual identifier"),
@@ -909,7 +909,7 @@ async def serve_image(
 # ==================== Vision/State Analysis API ====================
 
 @app.post("/api/vision/upload-images", response_model=ImageUploadResponse)
-@limiter.limit("30/hour")
+@limiter.limit("60/hour")
 async def upload_assembly_images(
     request: Request,
     images: List[UploadFile] = File(..., description="1-4 images of assembly")
@@ -1452,7 +1452,7 @@ task_manager = TaskManager()
 
 
 @app.post("/api/video/upload", response_model=VideoUploadResponse)
-@limiter.limit("10/hour")
+@limiter.limit("20/hour")
 async def upload_video(
     request: Request,
     manual_id: str = Form(...),
