@@ -409,6 +409,163 @@ Keep instructions concise but complete. Use simple language."""
             "status": "error"
         }
 
+    def generate_guidance_for_step(
+        self,
+        manual_id: str,
+        current_step: int,
+        next_step: Optional[int],
+        output_dir: str = "./output",
+        detection_confidence: float = 0.8
+    ) -> Dict[str, Any]:
+        """
+        Generate guidance for a specific step (simplified VLM-only approach).
+
+        This method is used by the DirectStepAnalyzer approach where we already
+        know the current step number from VLM detection.
+
+        Args:
+            manual_id: Manual identifier
+            current_step: Current step number (detected by VLM)
+            next_step: Next step number (None if complete)
+            output_dir: Directory containing Phase 1 outputs
+            detection_confidence: Confidence from step detection
+
+        Returns:
+            Dictionary containing guidance information
+        """
+        try:
+            logger.info(f"Generating guidance for step {current_step} -> {next_step}")
+
+            # Load dependencies to get total steps
+            from pathlib import Path
+            import json
+
+            dependencies_path = Path(output_dir) / manual_id / f"{manual_id}_dependencies.json"
+            total_steps = 0
+
+            if dependencies_path.exists():
+                with open(dependencies_path, 'r', encoding='utf-8') as f:
+                    dependencies = json.load(f)
+                    total_steps = len(dependencies.get("nodes", {}))
+
+            # If no next step, build is complete
+            if next_step is None or next_step > total_steps:
+                return {
+                    "instruction": "🎉 Congratulations! You've completed all steps of the assembly!",
+                    "next_step_number": None,
+                    "parts_needed": [],
+                    "reference_image": None,
+                    "error_corrections": [],
+                    "encouragement": "Amazing work! Your LEGO model is complete!",
+                    "confidence": 1.0,
+                    "total_steps": total_steps,
+                    "status": "complete"
+                }
+
+            # Load next step information
+            next_step_info = self._load_step_info(manual_id, next_step, output_dir)
+
+            if not next_step_info:
+                return self._create_error_guidance(f"Could not load information for step {next_step}")
+
+            # Generate instruction for next step
+            instruction = self._generate_instruction_simple(next_step_info, current_step, total_steps)
+
+            # Extract parts needed
+            parts_needed = self._extract_parts_needed(next_step_info)
+
+            # Get reference image
+            reference_image = self._get_reference_image(manual_id, next_step, output_dir)
+
+            # Generate encouragement
+            progress_percentage = (current_step / total_steps * 100) if total_steps > 0 else 0
+            encouragement = self._generate_encouragement_simple(current_step, total_steps, progress_percentage)
+
+            return {
+                "instruction": instruction,
+                "next_step_number": next_step,
+                "parts_needed": parts_needed,
+                "reference_image": reference_image,
+                "error_corrections": [],
+                "encouragement": encouragement,
+                "confidence": detection_confidence,
+                "total_steps": total_steps,
+                "status": "success"
+            }
+
+        except Exception as e:
+            logger.error(f"Error generating guidance for step: {e}")
+            return self._create_error_guidance(str(e))
+
+    def _generate_instruction_simple(
+        self,
+        next_step_info: Dict[str, Any],
+        current_step: int,
+        total_steps: int
+    ) -> str:
+        """
+        Generate simplified instruction without LLM (faster).
+
+        Args:
+            next_step_info: Information about the next step
+            current_step: Current step number
+            total_steps: Total number of steps
+
+        Returns:
+            Instruction text
+        """
+        parts = next_step_info.get("parts_required", [])
+        actions = next_step_info.get("actions", [])
+        notes = next_step_info.get("notes", "")
+
+        instruction_parts = [f"📍 Step {next_step_info.get('step_number', '?')} of {total_steps}"]
+
+        if parts:
+            instruction_parts.append("\n🔧 Parts needed:")
+            for part in parts:
+                color = part.get("color", "unknown")
+                desc = part.get("description", part.get("shape", "unknown"))
+                qty = part.get("quantity", 1)
+                instruction_parts.append(f"  • {qty}x {color} {desc}")
+
+        if actions:
+            instruction_parts.append("\n📝 What to do:")
+            for i, action in enumerate(actions, 1):
+                verb = action.get("action_verb", "attach")
+                target = action.get("target", "piece")
+                destination = action.get("destination", "assembly")
+                orientation = action.get("orientation", "")
+
+                action_text = f"  {i}. {verb.capitalize()} {target} to {destination}"
+                if orientation:
+                    action_text += f" ({orientation})"
+                instruction_parts.append(action_text)
+
+        if notes and notes != "null":
+            instruction_parts.append(f"\n💡 Tip: {notes}")
+
+        return "\n".join(instruction_parts)
+
+    def _generate_encouragement_simple(
+        self,
+        current_step: int,
+        total_steps: int,
+        progress_percentage: float
+    ) -> str:
+        """Generate simple encouragement message based on progress."""
+        if current_step == 0:
+            return "🚀 Let's get started! Follow the instructions to begin building."
+        elif progress_percentage < 25:
+            return f"👍 Great start! You've completed {current_step} of {total_steps} steps. Keep going!"
+        elif progress_percentage < 50:
+            return f"🎯 You're making good progress! {progress_percentage:.0f}% complete."
+        elif progress_percentage < 75:
+            return f"⭐ Excellent work! You're over halfway there at {progress_percentage:.0f}%!"
+        elif progress_percentage < 100:
+            return f"🔥 Almost done! Just {total_steps - current_step} steps to go!"
+        else:
+            return "🎉 Congratulations! You've completed the build!"
+
 
 # Singleton instance
 _guidance_generator_instance = None
