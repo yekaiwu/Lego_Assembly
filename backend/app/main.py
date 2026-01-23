@@ -984,25 +984,24 @@ async def analyze_assembly_state(
     output_dir: Optional[str] = "./output"
 ):
     """
-    Analyze assembly state from uploaded images.
-    
+    Analyze assembly state from uploaded images using simplified VLM-only approach.
+
     This endpoint:
-    1. Analyzes images using VLM to detect parts and state
-    2. Compares detected state with expected plan
-    3. Determines progress and identifies errors
-    4. Generates next-step guidance
-    
+    1. Uses VLM to directly detect current step from images
+    2. Generates next-step guidance based on detected step
+    3. Returns simplified response with step information
+
     Args:
         manual_id: Manual identifier (must be processed by Phase 1)
         session_id: Session ID from image upload
         output_dir: Directory containing Phase 1 outputs
-    
+
     Returns:
         Complete state analysis with guidance
     """
     try:
         logger.info(f"Analyzing assembly state for manual {manual_id}, session {session_id}")
-        
+
         # Get uploaded image paths
         upload_dir = Path(f"/tmp/lego_assembly_uploads/{session_id}")
         if not upload_dir.exists():
@@ -1010,86 +1009,93 @@ async def analyze_assembly_state(
                 status_code=404,
                 detail="Session not found. Please upload images first."
             )
-        
+
         image_paths = sorted([str(p) for p in upload_dir.glob("image_*.*")])
         if not image_paths:
             raise HTTPException(
                 status_code=404,
                 detail="No images found for this session"
             )
-        
+
         logger.info(f"Found {len(image_paths)} images for analysis")
-        
-        # Initialize vision services
-        state_analyzer = get_state_analyzer()
-        state_comparator = get_state_comparator()
+
+        # Initialize simplified vision service
+        from .vision.direct_step_analyzer import get_direct_step_analyzer
+        direct_analyzer = get_direct_step_analyzer()
         guidance_generator = get_guidance_generator()
-        
-        # Step 1: Analyze assembly state with VLM
-        logger.info("Step 1: Analyzing assembly state with VLM...")
-        detected_state = state_analyzer.analyze_assembly_state(
+
+        # Step 1: Direct step detection with VLM (single call replaces complex pipeline)
+        logger.info("Step 1: Detecting current step with VLM...")
+        step_detection = direct_analyzer.detect_current_step(
             image_paths=image_paths,
             manual_id=manual_id
         )
-        
-        # Step 2: Compare with plan
-        logger.info("Step 2: Comparing with plan...")
-        comparison_result = state_comparator.compare_with_plan(
-            detected_state=detected_state,
+
+        current_step = step_detection["step_number"]
+        confidence = step_detection["confidence"]
+        reasoning = step_detection["reasoning"]
+        next_step = step_detection["next_step"]
+
+        logger.info(f"Detected step {current_step} with {confidence:.1%} confidence")
+        logger.info(f"Reasoning: {reasoning}")
+
+        # Step 2: Generate guidance for next step
+        logger.info("Step 2: Generating guidance...")
+        guidance = guidance_generator.generate_guidance_for_step(
             manual_id=manual_id,
-            output_dir=output_dir
+            current_step=current_step,
+            next_step=next_step,
+            output_dir=output_dir,
+            detection_confidence=confidence
         )
         
-        # Step 3: Generate guidance
-        logger.info("Step 3: Generating guidance...")
-        guidance = guidance_generator.generate_guidance(
-            detected_state=detected_state,
-            comparison_result=comparison_result,
-            manual_id=manual_id,
-            output_dir=output_dir
-        )
-        
-        # Build comprehensive response
+        # Calculate progress
+        total_steps = guidance.get("total_steps", 1)
+        completed_steps = list(range(1, current_step + 1)) if current_step > 0 else []
+        progress_percentage = (current_step / total_steps * 100) if total_steps > 0 else 0.0
+
+        # Build simplified response
         response = StateAnalysisResponse(
-            # Detected State
-            detected_parts=[
-                DetectedPart(**part) for part in detected_state.get("detected_parts", [])
-            ],
-            assembled_structures=[
-                AssembledStructure(**struct) for struct in detected_state.get("assembled_structures", [])
-            ],
-            connections=[
-                PartConnection(**conn) for conn in detected_state.get("connections", [])
-            ],
-            spatial_layout=SpatialLayout(**detected_state.get("spatial_layout", {})),
-            detection_confidence=detected_state.get("confidence", 0.0),
-            
+            # Detected State (simplified - no detailed part analysis)
+            detected_parts=[],  # VLM-only approach doesn't need detailed part breakdown
+            assembled_structures=[],
+            connections=[],
+            spatial_layout=SpatialLayout(
+                overall_shape=reasoning[:100] if reasoning else "",  # Brief summary
+                dimensions="See reasoning for details",
+                front_view="N/A",
+                top_view="N/A",
+                side_view="N/A",
+                complexity="N/A"
+            ),
+            detection_confidence=confidence,
+
             # Progress
-            completed_steps=comparison_result.get("completed_steps", []),
-            current_step=comparison_result.get("current_step", 1),
-            progress_percentage=comparison_result.get("progress_percentage", 0.0),
-            total_steps=comparison_result.get("total_steps", 0),
-            
+            completed_steps=completed_steps,
+            current_step=current_step,
+            progress_percentage=progress_percentage,
+            total_steps=total_steps,
+
             # Guidance
             instruction=guidance.get("instruction", ""),
-            next_step_number=guidance.get("next_step_number"),
+            next_step_number=next_step,
             parts_needed=[
                 PartInfo(**part) for part in guidance.get("parts_needed", [])
             ],
             reference_image=guidance.get("reference_image"),
-            
-            # Errors
-            errors=comparison_result.get("errors", []),
-            error_corrections=guidance.get("error_corrections", []),
-            missing_parts=comparison_result.get("missing_parts", []),
-            
+
+            # Errors (VLM-only doesn't do detailed error detection)
+            errors=[],
+            error_corrections=[],
+            missing_parts=[],
+
             # Metadata
-            encouragement=guidance.get("encouragement", ""),
-            confidence=guidance.get("confidence", 0.0),
+            encouragement=guidance.get("encouragement", "Great work! Keep building!"),
+            confidence=confidence,
             status="success"
         )
-        
-        logger.info(f"Analysis complete: {response.progress_percentage:.1f}% progress")
+
+        logger.info(f"Analysis complete: Step {current_step}/{total_steps} ({progress_percentage:.1f}% progress)")
         return response
         
     except HTTPException:

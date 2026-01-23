@@ -1,0 +1,78 @@
+Analyze this LEGO assembly photo and determine which step the user is currently on.
+
+CONTEXT:
+- Manual ID: {{manual_id}}
+- Total steps: {{total_steps}}
+
+ASSEMBLY MANUAL STEPS:
+{{manual_steps_context}}
+
+TASK:
+Look at the user's assembly photo and determine:
+1. Which step number best matches what's shown in the photo
+2. Your confidence level (0.0-1.0) in this determination
+3. Clear reasoning for your choice
+4. The next step the user should take
+
+ANALYSIS GUIDELINES:
+
+1. **Visual Comparison**:
+   - Compare the current assembly state against each step's expected outcome
+   - Look for the EXACT combination of parts and their arrangement
+   - Consider both WHAT parts are present and HOW they're assembled
+   - Pay attention to colors, orientations, and connections
+
+2. **Cumulative Assembly**:
+   - Remember that LEGO assembly is cumulative - step N includes all parts from steps 1 through N
+   - A photo showing step 5 will contain ALL parts from steps 1-5
+   - The user is on the HIGHEST numbered step that matches their assembly
+
+3. **Step Boundaries**:
+   - If the assembly perfectly matches step N's outcome, they completed step N
+   - If parts from step N+1 are partially attached, they're currently working on step N+1
+   - If uncertain between two steps, choose the LOWER step number (be conservative)
+
+4. **Key Indicators**:
+   - Count total parts visible and match to cumulative parts list
+   - Verify color combinations (e.g., "2x red + 1x blue" is distinctive)
+   - Check for distinctive subassemblies or structural patterns
+   - Look for recently added parts (those that appear less settled or positioned)
+
+5. **Confidence Scoring**:
+   - High (0.8-1.0): Clear match, distinctive features, all expected parts present
+   - Medium (0.5-0.8): Likely match but some occlusion or angle issues
+   - Low (0.0-0.5): Ambiguous, poor photo quality, or between steps
+
+6. **Common Edge Cases**:
+   - If no parts visible: step_number = 0, confidence = 1.0
+   - If all steps complete: step_number = {{total_steps}}, note completion in reasoning
+   - If assembly has errors (wrong colors, missing parts): identify closest matching step and note the discrepancy in reasoning
+
+OUTPUT FORMAT:
+Return ONLY valid JSON with this exact structure:
+{
+  "step_number": <integer, the step number they've completed or are working on>,
+  "confidence": <float 0.0-1.0>,
+  "reasoning": "<detailed explanation: what parts you see, why this matches step N, what distinguishes it from nearby steps>",
+  "next_step": <integer, the next step to work on (step_number + 1, or null if complete)>,
+  "assembly_status": {
+    "total_parts_detected": <integer>,
+    "key_features": ["list of distinctive features that helped identify the step"],
+    "potential_issues": ["any detected problems: wrong colors, loose connections, etc."]
+  }
+}
+
+CRITICAL REQUIREMENTS:
+- Return ONLY the JSON object, no additional text
+- step_number must be an integer between 0 and {{total_steps}}
+- confidence must be between 0.0 and 1.0
+- Provide specific, detailed reasoning that references visible parts and manual steps
+- If multiple photos are provided, synthesize information from all views
+
+VALIDATION CHECKLIST:
+Before returning, verify:
+✓ step_number is within valid range [0, {{total_steps}}]
+✓ reasoning explains WHY this step, not just WHAT you see
+✓ confidence reflects actual certainty (don't over-inflate)
+✓ next_step is logical (step_number + 1, or null if complete)
+✓ JSON is valid and parseable
