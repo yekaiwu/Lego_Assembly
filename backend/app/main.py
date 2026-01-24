@@ -51,7 +51,7 @@ from .models.schemas import (
 from .ingestion.ingest_service import get_ingestion_service
 from .rag.pipeline import get_rag_pipeline
 from .vector_store.chroma_manager import get_chroma_manager
-from .vision import get_state_analyzer, get_state_comparator, get_guidance_generator
+from .vision import get_state_analyzer, get_direct_step_analyzer, get_guidance_generator
 from .graph.graph_manager import get_graph_manager
 
 # Initialize rate limiter
@@ -276,6 +276,10 @@ async def upload_manual_files(
         output_dir = Path(settings.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
+        # Create manual-specific directory
+        manual_dir = output_dir / manual_id
+        manual_dir.mkdir(parents=True, exist_ok=True)
+
         # Create temp_pages/{manual_id} directory if images are provided
         temp_pages_dir = output_dir / "temp_pages" / manual_id
         if images:
@@ -283,29 +287,29 @@ async def upload_manual_files(
 
         uploaded_files = []
 
-        # Validate and upload required JSON files (directly to output directory)
+        # Validate and upload required JSON files (to manual-specific directory)
         for file, filename in [
             (extracted_json, f"{manual_id}_extracted.json"),
             (plan_json, f"{manual_id}_plan.json"),
             (dependencies_json, f"{manual_id}_dependencies.json"),
         ]:
             await validate_json_upload(file)
-            file_path = output_dir / filename
+            file_path = manual_dir / filename
             with open(file_path, "wb") as f:
                 shutil.copyfileobj(file.file, f)
             uploaded_files.append(filename)
             logger.info(f"Uploaded {filename}")
 
-        # Upload optional files (directly to output directory)
+        # Upload optional files (to manual-specific directory)
         if plan_txt:
-            file_path = output_dir / f"{manual_id}_plan.txt"
+            file_path = manual_dir / f"{manual_id}_plan.txt"
             with open(file_path, "wb") as f:
                 shutil.copyfileobj(plan_txt.file, f)
             uploaded_files.append(f"{manual_id}_plan.txt")
 
         if graph_json:
             await validate_json_upload(graph_json)
-            file_path = output_dir / f"{manual_id}_graph.json"
+            file_path = manual_dir / f"{manual_id}_graph.json"
             with open(file_path, "wb") as f:
                 shutil.copyfileobj(graph_json.file, f)
             uploaded_files.append(f"{manual_id}_graph.json")
@@ -454,7 +458,7 @@ async def query_multimodal(request: MultimodalQueryRequest):
             )
         
         logger.info(f"Processing multimodal query with {len(user_images)} images")
-        
+
         response = rag_pipeline.process_text_query(
             manual_id=request.manual_id,
             question=request.question,
@@ -462,13 +466,14 @@ async def query_multimodal(request: MultimodalQueryRequest):
             include_images=request.include_images,
             user_images=user_images
         )
-        
+
+        logger.info(f"Successfully generated response, returning to client")
         return response
-        
+
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Multimodal query error: {e}")
+        logger.error(f"Multimodal query error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -828,8 +833,8 @@ async def get_extracted_steps(
     Returns the raw extracted step information including parts, actions, and notes.
     """
     try:
-        extracted_path = Path(settings.output_dir) / f"{manual_id}_extracted.json"
-        
+        extracted_path = Path(settings.output_dir) / manual_id / f"{manual_id}_extracted.json"
+
         if not extracted_path.exists():
             raise HTTPException(
                 status_code=404,
@@ -878,20 +883,40 @@ async def get_extracted_steps(
 
 @app.get("/api/image")
 async def serve_image(
-    path: str = Query(..., description="Image path")
+    path: str = Query(..., description="Image path"),
+    manual_id: str = Query(..., description="Manual ID")
 ):
     """
-    Serve step images.
+    Serve step images using new directory structure.
+    New structure: output/temp_pages/{manual_id}/page_XXX.png
+                   output/segmented_parts/{manual_id}/step_XXX/part.png
     """
     try:
-        # Resolve path relative to project root (parent of backend/)
-        # If path is relative (e.g., "output/temp_pages/page_001.png"), resolve it
-        image_path = Path(path)
+        project_root = Path(__file__).parent.parent.parent
+        path_obj = Path(path)
 
-        # If not absolute, resolve relative to backend's parent directory (project root)
-        if not image_path.is_absolute():
-            project_root = Path(__file__).parent.parent.parent  # Go up from app/main.py to project root
-            image_path = project_root / image_path
+        # Extract filename and determine type
+        filename = path_obj.name
+        path_str = str(path)
+
+        # Build new path based on type
+        if "temp_pages" in path_str:
+            # Page images: output/temp_pages/{manual_id}/page_XXX.png
+            image_path = project_root / "output" / "temp_pages" / manual_id / filename
+        elif "segmented_parts" in path_str:
+            # Part images: output/segmented_parts/{manual_id}/step_XXX/part.png
+            # Extract step directory and filename
+            parts = path_obj.parts
+            if "segmented_parts" in parts:
+                idx = parts.index("segmented_parts")
+                # Get everything after segmented_parts (e.g., step_001/part.png)
+                remainder = Path(*parts[idx+1:])
+                image_path = project_root / "output" / "segmented_parts" / manual_id / remainder
+            else:
+                image_path = project_root / path_obj
+        else:
+            # Direct path
+            image_path = project_root / path_obj
 
         if not image_path.exists():
             logger.error(f"Image not found at: {image_path}")
@@ -1341,23 +1366,17 @@ async def get_assembly_progress(
             image_paths = sorted([str(p) for p in upload_dir.glob("image_*.*")])
 
             if image_paths:
-                # Analyze images to get detected parts
-                state_analyzer = get_state_analyzer()
-                detected_state = state_analyzer.analyze_assembly_state(
+                # Directly detect current step using VLM-only approach
+                direct_analyzer = get_direct_step_analyzer()
+                detection_result = direct_analyzer.detect_current_step(
                     image_paths=image_paths,
                     manual_id=manual_id
                 )
 
-                # Compare with plan to get current step
-                state_comparator = get_state_comparator()
-                comparison = state_comparator.compare_with_plan(
-                    detected_state=detected_state,
-                    manual_id=manual_id
-                )
-
                 # Calculate progress from step number
-                current_step = comparison.get('current_step', 1)
-                completed_steps = comparison.get('completed_steps', [])
+                current_step = detection_result.get('step_number', 0)
+                # For completed_steps, infer all steps before current_step
+                completed_steps = list(range(1, current_step)) if current_step > 0 else []
                 progress = (current_step / total_steps) * 100 if total_steps > 0 else 0.0
 
                 return {
@@ -1365,7 +1384,9 @@ async def get_assembly_progress(
                     "progress_percentage": round(progress, 1),
                     "current_step": current_step,
                     "total_steps": total_steps,
-                    "completed_steps": completed_steps
+                    "completed_steps": completed_steps,
+                    "confidence": detection_result.get('confidence', 0.0),
+                    "reasoning": detection_result.get('reasoning', '')
                 }
 
         # Default: return overall statistics (no progress calculated)
@@ -1633,8 +1654,9 @@ async def analyze_video(
 
         # Check if manual data exists
         output_dir = Path(settings.output_dir)
-        extracted_path = output_dir / f"{manual_id}_extracted.json"
-        dependencies_path = output_dir / f"{manual_id}_dependencies.json"
+        manual_dir = output_dir / manual_id
+        extracted_path = manual_dir / f"{manual_id}_extracted.json"
+        dependencies_path = manual_dir / f"{manual_id}_dependencies.json"
 
         if not extracted_path.exists():
             raise HTTPException(
@@ -1643,7 +1665,7 @@ async def analyze_video(
             )
 
         # Get reference images (first 10 step images)
-        temp_pages_dir = output_dir / "temp_pages"
+        temp_pages_dir = output_dir / "temp_pages" / manual_id
         reference_images = []
         if temp_pages_dir.exists():
             reference_images = sorted(temp_pages_dir.glob("page_*.png"))[:10]

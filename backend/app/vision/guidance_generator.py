@@ -140,8 +140,8 @@ class GuidanceGenerator:
         """
         try:
             output_path = Path(output_dir)
-            extracted_path = output_path / f"{manual_id}_extracted.json"
-            
+            extracted_path = output_path / manual_id / f"{manual_id}_extracted.json"
+
             if not extracted_path.exists():
                 logger.error(f"Extracted data not found: {extracted_path}")
                 return None
@@ -293,29 +293,31 @@ Keep instructions concise but complete. Use simple language."""
         """
         try:
             output_path = Path(output_dir)
-            temp_pages_dir = output_path / "temp_pages"
-            
+            # New structure: output/temp_pages/{manual_id}/
+            temp_pages_dir = output_path / "temp_pages" / manual_id
+
             # Try common image naming patterns
             patterns = [
+                f"page_{step_number:03d}.png",  # page_001.png
+                f"page_{step_number}.png",
                 f"{manual_id}_page_{step_number}.png",
                 f"{manual_id}_step_{step_number}.png",
-                f"page_{step_number}.png",
                 f"step_{step_number}.png"
             ]
-            
+
             for pattern in patterns:
                 image_path = temp_pages_dir / pattern
                 if image_path.exists():
                     return str(image_path)
-            
+
             # Try finding any image with step number in name
             if temp_pages_dir.exists():
                 for image_path in temp_pages_dir.glob(f"*{step_number}*.png"):
                     return str(image_path)
-            
-            logger.warning(f"Reference image not found for step {step_number}")
+
+            logger.warning(f"Reference image not found for step {step_number} in {temp_pages_dir}")
             return None
-            
+
         except Exception as e:
             logger.error(f"Error finding reference image: {e}")
             return None

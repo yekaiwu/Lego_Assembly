@@ -328,7 +328,7 @@ export default function GraphVisualization() {
               <p className="text-sm text-gray-500 mb-2">Image</p>
               <div className="flex justify-center">
                 <img
-                  src={api.getImageUrl(selectedNode.image_path)}
+                  src={api.getImageUrl(selectedNode.image_path, selectedManual!)}
                   alt={selectedNode.name}
                   className="max-w-full h-auto max-h-64 object-contain border-2 border-gray-200 rounded-lg p-2 bg-gray-50"
                   onError={(e) => {

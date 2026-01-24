@@ -19,7 +19,7 @@ export const apiClient = axios.create({
   headers: {
     'Content-Type': 'application/json',
   },
-  timeout: 30000, // 30 second timeout
+  timeout: 120000, // 120 second timeout (VLM analysis can be slow)
 })
 
 // Add request interceptor for debugging
@@ -359,8 +359,8 @@ export const api = {
   },
 
   // Get image URL
-  getImageUrl(imagePath: string): string {
-    return `${API_URL}/api/image?path=${encodeURIComponent(imagePath)}`
+  getImageUrl(imagePath: string, manualId: string): string {
+    return `${API_URL}/api/image?path=${encodeURIComponent(imagePath)}&manual_id=${manualId}`
   },
 
   // Ingest manual

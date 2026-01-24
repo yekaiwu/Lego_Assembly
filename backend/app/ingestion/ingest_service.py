@@ -148,10 +148,10 @@ class IngestionService:
             Dict with overall statistics
         """
         output_dir = Path(self.settings.output_dir)
-        
-        # Find all extracted.json files
-        extracted_files = list(output_dir.glob("*_extracted.json"))
-        
+
+        # Find all extracted.json files in manual subdirectories
+        extracted_files = list(output_dir.glob("*/*_extracted.json"))
+
         results = []
         for extracted_file in extracted_files:
             manual_id = extracted_file.stem.replace("_extracted", "")

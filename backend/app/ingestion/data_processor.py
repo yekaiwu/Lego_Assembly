@@ -50,11 +50,12 @@ class ManualDataProcessor:
             Tuple of (extracted_data, plan_data, dependencies_data, plan_text)
         """
         try:
-            # Load JSON files
-            extracted_path = self.output_dir / f"{manual_id}_extracted.json"
-            plan_path = self.output_dir / f"{manual_id}_plan.json"
-            dependencies_path = self.output_dir / f"{manual_id}_dependencies.json"
-            plan_txt_path = self.output_dir / f"{manual_id}_plan.txt"
+            # Load JSON files from manual-specific directory
+            manual_dir = self.output_dir / manual_id
+            extracted_path = manual_dir / f"{manual_id}_extracted.json"
+            plan_path = manual_dir / f"{manual_id}_plan.json"
+            dependencies_path = manual_dir / f"{manual_id}_dependencies.json"
+            plan_txt_path = manual_dir / f"{manual_id}_plan.txt"
             
             with open(extracted_path, 'r', encoding='utf-8') as f:
                 extracted_data = json.load(f)

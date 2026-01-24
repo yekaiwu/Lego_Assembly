@@ -241,7 +241,7 @@ export default function VideoStepPlayer({
             <div className="mt-3">
               <p className="text-xs text-gray-600 mb-1">Reference from manual:</p>
               <img
-                src={`/api/image?path=${activeStep.reference_image}`}
+                src={api.getImageUrl(activeStep.reference_image, manualId)}
                 alt={`Step ${activeStep.step_id} reference`}
                 className="w-full max-w-md rounded border"
               />

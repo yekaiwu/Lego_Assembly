@@ -3,12 +3,18 @@ Analyze this LEGO assembly photo and determine which step the user is currently 
 CONTEXT:
 - Manual ID: {{manual_id}}
 - Total steps: {{total_steps}}
+- Reference images provided: {{has_reference_images}}
 
 ASSEMBLY MANUAL STEPS:
 {{manual_steps_context}}
 
+IMAGE ORDER:
+The images are provided in this order:
+1. FIRST {{num_user_images}} image(s): User's assembly photos (what they've built so far)
+2. REMAINING images: Reference step images from the manual (pages showing each step's expected outcome)
+
 TASK:
-Look at the user's assembly photo and determine:
+Look at the user's assembly photo(s) and compare them against the reference step images to determine:
 1. Which step number best matches what's shown in the photo
 2. Your confidence level (0.0-1.0) in this determination
 3. Clear reasoning for your choice
@@ -16,11 +22,13 @@ Look at the user's assembly photo and determine:
 
 ANALYSIS GUIDELINES:
 
-1. **Visual Comparison**:
-   - Compare the current assembly state against each step's expected outcome
-   - Look for the EXACT combination of parts and their arrangement
+1. **Visual Comparison with Reference Images**:
+   - COMPARE the user's assembly (first images) against the reference step images (remaining images)
+   - Each reference image shows what the assembly should look like after completing that step
+   - Look for the EXACT visual match between user's assembly and a reference image
    - Consider both WHAT parts are present and HOW they're assembled
-   - Pay attention to colors, orientations, and connections
+   - Pay attention to colors, orientations, connections, and overall structure
+   - The reference images are your PRIMARY source of truth for step identification
 
 2. **Cumulative Assembly**:
    - Remember that LEGO assembly is cumulative - step N includes all parts from steps 1 through N
