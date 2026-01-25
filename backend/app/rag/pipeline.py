@@ -66,24 +66,28 @@ class RAGPipeline:
             if user_images:
                 logger.info("🔍 Using VLM-only approach for direct step detection...")
 
-                # Use DirectStepAnalyzer for VLM-only step detection
-                step_detection = self.direct_step_analyzer.detect_current_step(
-                    image_paths=user_images,
-                    manual_id=manual_id
-                )
-
-                current_step = step_detection.get('step_number')
-                next_step = step_detection.get('next_step')
-                step_confidence = step_detection.get('confidence', 0.0)
-
-                # Also run the old state analyzer for part detection (backward compatibility)
+                # FIRST: Run state analyzer to get detected parts
                 image_analysis = self.state_analyzer.analyze_assembly_state(
                     image_paths=user_images,
                     manual_id=manual_id,
                     context=question
                 )
 
-                # Store step detection info separately (will be used in response)
+                detected_parts = image_analysis.get('detected_parts', [])
+                logger.info(f"Detected {len(detected_parts)} parts from user images")
+
+                # SECOND: Use DirectStepAnalyzer with detected parts for step detection
+                step_detection = self.direct_step_analyzer.detect_current_step(
+                    image_paths=user_images,
+                    manual_id=manual_id,
+                    detected_parts=detected_parts  # Pass detected parts for matching
+                )
+
+                current_step = step_detection.get('step_number')
+                next_step = step_detection.get('next_step')
+                step_confidence = step_detection.get('confidence', 0.0)
+
+                # Store step detection info in image_analysis (will be used in response)
                 # Don't add fields that aren't in ImageAnalysisResult schema
                 image_analysis['current_step'] = current_step
                 image_analysis['next_step'] = next_step
@@ -93,7 +97,7 @@ class RAGPipeline:
                 reasoning = step_detection.get('reasoning', '')
 
                 logger.info(
-                    f"✓ VLM Step Detection: Completed Step {current_step}, "
+                    f"✓ VLM Step Detection: Current Step {current_step}, "
                     f"Next Step {next_step}, "
                     f"Confidence: {step_confidence:.2%}"
                 )

@@ -7,7 +7,7 @@ CONTEXT:
 
 ASSEMBLY MANUAL STEPS:
 {{manual_steps_context}}
-
+{{detected_parts_section}}
 IMAGE ORDER:
 The images are provided in this order:
 1. FIRST {{num_user_images}} image(s): User's assembly photos (what they've built so far)

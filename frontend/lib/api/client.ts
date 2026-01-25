@@ -19,7 +19,7 @@ export const apiClient = axios.create({
   headers: {
     'Content-Type': 'application/json',
   },
-  timeout: 120000, // 120 second timeout (VLM analysis can be slow)
+  timeout: 300000, // 300 second timeout (VLM analysis can be slow)
 })
 
 // Add request interceptor for debugging

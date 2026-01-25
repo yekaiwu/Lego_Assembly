@@ -52,7 +52,8 @@ class DirectStepAnalyzer:
         self,
         image_paths: List[str],
         manual_id: str,
-        max_reference_images: int = 20
+        max_reference_images: int = 20,
+        detected_parts: Optional[List[Dict[str, Any]]] = None
     ) -> Dict[str, Any]:
         """
         Directly detect which step the user is currently on from photos.
@@ -64,6 +65,8 @@ class DirectStepAnalyzer:
             image_paths: List of paths to user's assembly photos (1-4 images)
             manual_id: Manual identifier for context
             max_reference_images: Maximum number of reference images to include (default: 20)
+            detected_parts: Optional list of parts detected by StateAnalyzer
+                          (used for parts matching to improve accuracy)
 
         Returns:
             Dictionary containing:
@@ -81,12 +84,16 @@ class DirectStepAnalyzer:
             reference_images = self._load_reference_images(manual_id, max_reference_images)
             logger.info(f"Loaded {len(reference_images)} reference step images")
 
-            # Build the prompt with manual steps context
+            # Build the prompt with manual steps context and detected parts
             prompt = self._build_step_detection_prompt(
                 manual_id,
                 has_reference_images=len(reference_images) > 0,
-                num_user_images=len(image_paths)
+                num_user_images=len(image_paths),
+                detected_parts=detected_parts
             )
+
+            if detected_parts:
+                logger.info(f"Passing {len(detected_parts)} detected parts to VLM for comparison")
 
             # Combine user images and reference images for VLM
             all_images = image_paths + reference_images
@@ -135,7 +142,8 @@ class DirectStepAnalyzer:
         self,
         manual_id: str,
         has_reference_images: bool = False,
-        num_user_images: int = 1
+        num_user_images: int = 1,
+        detected_parts: Optional[List[Dict[str, Any]]] = None
     ) -> str:
         """
         Build VLM prompt for direct step detection.
@@ -147,6 +155,7 @@ class DirectStepAnalyzer:
             manual_id: Manual identifier
             has_reference_images: Whether reference images are included
             num_user_images: Number of user assembly images
+            detected_parts: Optional list of detected parts to include in prompt
 
         Returns:
             Formatted prompt string with manual steps context
@@ -162,8 +171,13 @@ class DirectStepAnalyzer:
             nodes = dependencies.get("nodes", {})
             total_steps = len(nodes)
 
-            # Format manual steps for VLM
-            manual_steps_context = self._format_manual_steps(nodes)
+            # Format manual steps with cumulative parts for VLM
+            manual_steps_context = self._format_manual_steps_with_parts(nodes)
+
+        # Format detected parts if available
+        detected_parts_text = ""
+        if detected_parts:
+            detected_parts_text = self._format_detected_parts(detected_parts)
 
         # Use PromptManager to load the direct_step_detection prompt template
         prompt_context = {
@@ -171,7 +185,8 @@ class DirectStepAnalyzer:
             'total_steps': str(total_steps),
             'manual_steps_context': manual_steps_context,
             'has_reference_images': 'yes' if has_reference_images else 'no',
-            'num_user_images': str(num_user_images)
+            'num_user_images': str(num_user_images),
+            'detected_parts_section': detected_parts_text
         }
 
         prompt = self.prompt_manager.get_prompt(
@@ -180,6 +195,88 @@ class DirectStepAnalyzer:
         )
 
         return prompt
+
+    def _format_detected_parts(self, detected_parts: List[Dict[str, Any]]) -> str:
+        """
+        Format detected parts into readable text for VLM prompt.
+
+        Args:
+            detected_parts: List of parts detected by StateAnalyzer
+
+        Returns:
+            Formatted string describing detected parts
+        """
+        if not detected_parts:
+            return ""
+
+        parts_lines = ["\nDETECTED PARTS FROM USER'S ASSEMBLY:"]
+        for i, part in enumerate(detected_parts, 1):
+            color = part.get("color", "unknown")
+            shape = part.get("shape", "unknown")
+            desc = part.get("description", "")
+            qty = part.get("quantity", 1)
+
+            part_text = f"{i}. {qty}x {color} {shape}"
+            if desc and desc not in shape:
+                part_text += f" ({desc})"
+            parts_lines.append(part_text)
+
+        parts_lines.append("")  # blank line
+        return "\n".join(parts_lines)
+
+    def _format_manual_steps_with_parts(self, nodes: Dict[str, Any]) -> str:
+        """
+        Format manual steps with cumulative parts information for VLM.
+
+        Args:
+            nodes: Dictionary of step nodes from dependencies.json
+
+        Returns:
+            Formatted string describing each step with cumulative parts
+        """
+        # Sort steps by step_number
+        sorted_steps = sorted(
+            nodes.items(),
+            key=lambda x: x[1].get('step_number', 0)
+        )
+
+        formatted_steps = []
+
+        for step_id, step_data in sorted_steps:
+            step_num = step_data.get('step_number', '?')
+            parts = step_data.get('parts_required', [])
+            cumulative_parts = step_data.get('cumulative_parts', [])
+            actions = step_data.get('actions', [])
+            existing = step_data.get('existing_assembly', '')
+
+            # Format parts added in this step
+            parts_list = []
+            for part in parts:
+                qty = part.get('quantity', 1)
+                color = part.get('color', '')
+                desc = part.get('description', '')
+                parts_list.append(f"{qty}x {color} {desc}".strip())
+
+            parts_text = ", ".join(parts_list) if parts_list else "no new parts"
+
+            # Get action verb
+            action = actions[0].get('action_verb', 'attach') if actions else 'attach'
+
+            # Build step description
+            step_desc = f"Step {step_num}: {action} {parts_text}"
+
+            # Add existing assembly context if available
+            if existing and existing != "null":
+                step_desc += f" (building on: {existing})"
+
+            # Add cumulative parts count
+            if cumulative_parts:
+                total_parts = sum(p.get('quantity', 1) for p in cumulative_parts)
+                step_desc += f" [Total parts up to this step: {total_parts}]"
+
+            formatted_steps.append(step_desc)
+
+        return "\n".join(formatted_steps)
 
     def _load_dependencies(self, manual_id: str) -> Optional[Dict[str, Any]]:
         """
