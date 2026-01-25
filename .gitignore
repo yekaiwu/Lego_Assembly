@@ -65,6 +65,9 @@ data/*.db
 data/*.sqlite
 data/*.sqlite3
 
+# ChromaDB (vector database - runtime data, should not be in git)
+backend/chroma_db/
+
 # Output
 output/
 *.json
