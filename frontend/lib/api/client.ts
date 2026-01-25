@@ -19,7 +19,7 @@ export const apiClient = axios.create({
   headers: {
     'Content-Type': 'application/json',
   },
-  timeout: 30000, // 30 second timeout
+  timeout: 300000, // 300 second timeout
 })
 
 // Add request interceptor for debugging
