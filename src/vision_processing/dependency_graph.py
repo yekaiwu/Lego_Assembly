@@ -205,10 +205,69 @@ class DependencyGraph:
 
         return is_valid, errors
     
+    def _compute_cumulative_parts(self) -> Dict[int, List[Dict[str, Any]]]:
+        """
+        Compute cumulative parts list for each step.
+
+        For each step, aggregates all parts from step 1 to current step,
+        handling quantity accumulation when the same part appears in multiple steps.
+
+        Returns:
+            Dict mapping step_number -> cumulative_parts_list
+        """
+        cumulative = {}
+        parts_tracker = {}  # key: (color, shape, description) -> quantity
+
+        # Use build order to process steps in dependency order
+        build_order = self.topological_sort()
+
+        for step_num in build_order:
+            step_data = self.nodes[step_num]
+
+            # Add parts from this step
+            for part in step_data.get("parts_required", []):
+                # Create unique key for part identification
+                key = (
+                    part.get("color", "").lower(),
+                    part.get("shape", "").lower(),
+                    part.get("description", "").lower()
+                )
+                # Accumulate quantity
+                parts_tracker[key] = parts_tracker.get(key, 0) + part.get("quantity", 1)
+
+            # Convert to list format for this step
+            cumulative[step_num] = [
+                {
+                    "color": color,
+                    "shape": shape,
+                    "description": description,
+                    "quantity": quantity
+                }
+                for (color, shape, description), quantity in sorted(parts_tracker.items())
+            ]
+
+            logger.debug(
+                f"Step {step_num}: {len(cumulative[step_num])} unique parts, "
+                f"{sum(p['quantity'] for p in cumulative[step_num])} total pieces"
+            )
+
+        return cumulative
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert graph to dictionary representation."""
+        # Compute cumulative parts for all steps
+        cumulative_parts = self._compute_cumulative_parts()
+
+        # Create a copy of nodes with cumulative_parts added
+        nodes_with_cumulative = {}
+        for step_num, node_data in self.nodes.items():
+            nodes_with_cumulative[step_num] = {
+                **node_data,
+                "cumulative_parts": cumulative_parts.get(step_num, [])
+            }
+
         return {
-            "nodes": self.nodes,
+            "nodes": nodes_with_cumulative,
             "edges": dict(self.edges),
             "reverse_edges": dict(self.reverse_edges),
             "subassemblies": self.subassemblies,

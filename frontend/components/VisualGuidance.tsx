@@ -12,11 +12,13 @@ import {
 
 interface VisualGuidanceProps {
   analysis: StateAnalysisResponse
+  manualId: string
   onRetry?: () => void
 }
 
 export const VisualGuidance: React.FC<VisualGuidanceProps> = ({
   analysis,
+  manualId,
   onRetry,
 }) => {
   const progressColor =
@@ -119,7 +121,7 @@ export const VisualGuidance: React.FC<VisualGuidanceProps> = ({
                 </span>
               </div>
               <img
-                src={api.getImageUrl(analysis.reference_image)}
+                src={api.getImageUrl(analysis.reference_image, manualId)}
                 alt="Step reference"
                 className="w-full h-auto"
               />

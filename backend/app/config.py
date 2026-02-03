@@ -69,10 +69,13 @@ class Settings(BaseSettings):
     @model_validator(mode='after')
     def resolve_paths(self):
         """
-        Resolve output paths to handle both backend/ and project root execution contexts.
+        Resolve output paths to absolute paths that work in both dev and deployment.
 
-        If output_dir from .env is '../output' (for backend/ context) but we're running
-        from project root, adjust to './output' instead.
+        Handles two scenarios:
+        1. Running from backend/ directory: ../output → /absolute/path/to/project/output
+        2. Running from project root: ./output → /absolute/path/to/project/output
+
+        Always stores ABSOLUTE paths to avoid ambiguity.
         """
         # Convert to Path if string
         if isinstance(self.output_dir, str):
@@ -80,17 +83,38 @@ class Settings(BaseSettings):
         if isinstance(self.temp_pages_dir, str):
             self.temp_pages_dir = Path(self.temp_pages_dir)
 
-        # Resolve the path relative to current working directory
+        # Try to resolve the path from .env
         resolved_output = self.output_dir.resolve()
 
-        # If the resolved path doesn't exist, try alternative locations
-        if not resolved_output.exists():
-            # Try ./output relative to cwd (project root execution)
-            alternative = Path.cwd() / "output"
-            if alternative.exists():
-                self.output_dir = Path("./output")
-                self.temp_pages_dir = Path("./output/temp_pages")
-                print(f"INFO: Adjusted output_dir from {resolved_output} to {alternative}")
+        # Check if resolved path exists
+        if resolved_output.exists():
+            # Path exists - use the absolute resolved path
+            self.output_dir = resolved_output
+            self.temp_pages_dir = resolved_output / "temp_pages"
+            print(f"INFO: Using output directory: {self.output_dir}")
+        else:
+            # Path doesn't exist - try alternative locations
+            # This handles cases where .env has ../output but we're running from project root
+            cwd = Path.cwd()
+
+            # Try ./output from cwd
+            alternative1 = cwd / "output"
+            if alternative1.exists():
+                self.output_dir = alternative1.resolve()
+                self.temp_pages_dir = self.output_dir / "temp_pages"
+                print(f"INFO: Adjusted output_dir to: {self.output_dir}")
+            else:
+                # Try ../output from cwd (in case we're in a subdirectory)
+                alternative2 = cwd.parent / "output"
+                if alternative2.exists():
+                    self.output_dir = alternative2.resolve()
+                    self.temp_pages_dir = self.output_dir / "temp_pages"
+                    print(f"INFO: Adjusted output_dir to: {self.output_dir}")
+                else:
+                    # Neither exists - keep the resolved path anyway (will be created later)
+                    self.output_dir = resolved_output
+                    self.temp_pages_dir = resolved_output / "temp_pages"
+                    print(f"WARNING: Output directory not found, using: {self.output_dir}")
 
         return self
     

@@ -88,6 +88,8 @@ You have access to:
 
 **Guidelines:**
 - For "what am I building" questions: Use model metadata and subassembly clues
+- For "what step am I on" questions: Use the "Current Step" value - this is the step the user is currently working on
+- For "what's next" questions: Use the "Next Step to Do" value - this is what they should do after completing the current step
 - For step questions: Reference specific step numbers
 - For part questions: Mention color and shape clearly
 - For structural questions: Reference subassemblies and hierarchies
@@ -213,10 +215,10 @@ Please provide a helpful, accurate answer based on all the context above."""
         # 2. CURRENT ASSEMBLY STATE (if available)
         if current_step:
             state_info_parts = ["## Current Assembly State"]
-            state_info_parts.append(f"- Completed Step: {current_step}")
+            state_info_parts.append(f"- Current Step: {current_step}")
 
             if next_step:
-                state_info_parts.append(f"- Next Step: {next_step}")
+                state_info_parts.append(f"- Next Step to Do: {next_step}")
 
             # Get step state from graph
             try:

@@ -11,6 +11,7 @@ from .retrieval import get_retriever_service
 from .generator import get_generator_service
 from ..models.schemas import QueryResponse, RetrievalResult, PartInfo
 from ..vision.state_analyzer import get_state_analyzer
+from ..vision.direct_step_analyzer import get_direct_step_analyzer
 from ..graph.graph_manager import get_graph_manager
 
 
@@ -22,6 +23,7 @@ class RAGPipeline:
         self.retriever = get_retriever_service()
         self.generator = get_generator_service()
         self.state_analyzer = get_state_analyzer()
+        self.direct_step_analyzer = get_direct_step_analyzer()
         self.graph_manager = get_graph_manager()
     
     def process_text_query(
@@ -62,52 +64,44 @@ class RAGPipeline:
             step_confidence = 0.0
 
             if user_images:
-                logger.info("🔍 Analyzing user assembly images with VLM...")
+                logger.info("🔍 Using VLM-only approach for direct step detection...")
+
+                # FIRST: Run state analyzer to get detected parts
                 image_analysis = self.state_analyzer.analyze_assembly_state(
                     image_paths=user_images,
                     manual_id=manual_id,
                     context=question
                 )
 
-                # Use GRAPH-based matching for precise step detection
                 detected_parts = image_analysis.get('detected_parts', [])
-                if detected_parts:
-                    logger.info(f"📊 Matching {len(detected_parts)} detected parts to graph...")
-                    graph_matches = self.state_analyzer.match_state_to_graph(
-                        analysis_result=image_analysis,
-                        manual_id=manual_id,
-                        top_k=1
-                    )
+                logger.info(f"Detected {len(detected_parts)} parts from user images")
 
-                    if graph_matches:
-                        best_match = graph_matches[0]
-                        current_step = best_match['step_number']  # Step they completed
-                        next_step = best_match.get('next_step')   # Step to do next
+                # SECOND: Use DirectStepAnalyzer with detected parts for step detection
+                step_detection = self.direct_step_analyzer.detect_current_step(
+                    image_paths=user_images,
+                    manual_id=manual_id,
+                    detected_parts=detected_parts  # Pass detected parts for matching
+                )
 
-                        # Handle both combined (visual+text) and text-only confidence
-                        step_confidence = best_match.get('combined_confidence', best_match.get('confidence', 0.0))
+                current_step = step_detection.get('step_number')
+                next_step = step_detection.get('next_step')
+                step_confidence = step_detection.get('confidence', 0.0)
 
-                        image_analysis['current_step'] = current_step
-                        image_analysis['next_step'] = next_step
-                        image_analysis['step_confidence'] = step_confidence
-                        image_analysis['matched_node_ids'] = best_match.get('matched_node_ids', [])
+                # Store step detection info in image_analysis (will be used in response)
+                # Don't add fields that aren't in ImageAnalysisResult schema
+                image_analysis['current_step'] = current_step
+                image_analysis['next_step'] = next_step
+                image_analysis['step_confidence'] = step_confidence
+                image_analysis.setdefault('matched_node_ids', [])  # Ensure this field exists
+                # Store reasoning for logging but don't add to image_analysis dict
+                reasoning = step_detection.get('reasoning', '')
 
-                        # Log detailed match information
-                        if 'combined_confidence' in best_match:
-                            # Visual matching was used
-                            text_conf = best_match.get('text_confidence', 0.0)
-                            visual_conf = best_match.get('visual_confidence', 0.0)
-                            logger.info(
-                                f"✓ Combined match: Completed Step {current_step} "
-                                f"(combined: {step_confidence:.2f}, "
-                                f"text: {text_conf:.2f}, visual: {visual_conf:.2f})"
-                            )
-                        else:
-                            # Text-only matching
-                            logger.info(f"✓ Text match: Completed Step {current_step} (confidence: {step_confidence:.2f})")
-
-                        if next_step:
-                            logger.info(f"  Next step: {next_step}")
+                logger.info(
+                    f"✓ VLM Step Detection: Current Step {current_step}, "
+                    f"Next Step {next_step}, "
+                    f"Confidence: {step_confidence:.2%}"
+                )
+                logger.info(f"  Reasoning: {reasoning[:100] if reasoning else 'N/A'}...")
 
             # Step 2: Extract step number if mentioned in query (overrides detection)
             query_step = self._extract_step_number(question)

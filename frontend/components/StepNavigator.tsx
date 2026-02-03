@@ -43,7 +43,7 @@ export default function StepNavigator() {
   )
 
   const imagePath = currentStepDetails?.image_path
-  const imageUrl = imagePath ? api.getImageUrl(imagePath) : null
+  const imageUrl = imagePath ? api.getImageUrl(imagePath, selectedManual) : null
 
   return (
     <div className="space-y-4">

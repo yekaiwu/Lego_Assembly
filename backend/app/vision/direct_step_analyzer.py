@@ -51,7 +51,9 @@ class DirectStepAnalyzer:
     def detect_current_step(
         self,
         image_paths: List[str],
-        manual_id: str
+        manual_id: str,
+        max_reference_images: int = 20,
+        detected_parts: Optional[List[Dict[str, Any]]] = None
     ) -> Dict[str, Any]:
         """
         Directly detect which step the user is currently on from photos.
@@ -62,6 +64,9 @@ class DirectStepAnalyzer:
         Args:
             image_paths: List of paths to user's assembly photos (1-4 images)
             manual_id: Manual identifier for context
+            max_reference_images: Maximum number of reference images to include (default: 20)
+            detected_parts: Optional list of parts detected by StateAnalyzer
+                          (used for parts matching to improve accuracy)
 
         Returns:
             Dictionary containing:
@@ -73,18 +78,40 @@ class DirectStepAnalyzer:
         """
         try:
             logger.info(f"Detecting current step for manual {manual_id}")
-            logger.info(f"Processing {len(image_paths)} images")
+            logger.info(f"Processing {len(image_paths)} user images")
 
-            # Build the prompt with manual steps context
-            prompt = self._build_step_detection_prompt(manual_id)
+            # Load reference images from the manual
+            reference_images = self._load_reference_images(manual_id, max_reference_images)
+            logger.info(f"Loaded {len(reference_images)} reference step images")
+
+            # Build the prompt with manual steps context and detected parts
+            prompt = self._build_step_detection_prompt(
+                manual_id,
+                has_reference_images=len(reference_images) > 0,
+                num_user_images=len(image_paths),
+                detected_parts=detected_parts
+            )
+
+            if detected_parts:
+                logger.info(f"Passing {len(detected_parts)} detected parts to VLM for comparison")
+
+            # Combine user images and reference images for VLM
+            all_images = image_paths + reference_images
+
+            logger.info(f"Sending to VLM: {len(image_paths)} user images + {len(reference_images)} reference images = {len(all_images)} total")
+            logger.debug(f"User images: {image_paths}")
+            logger.debug(f"First 3 reference images: {reference_images[:3]}")
+            logger.debug(f"Prompt length: {len(prompt)} chars")
 
             # Call VLM with the direct step detection prompt
             cache_context = f"{manual_id}_step_detection"
             result = self.vlm_client.analyze_images_json(
-                image_paths=image_paths,
+                image_paths=all_images,
                 prompt=prompt,
                 cache_context=cache_context
             )
+
+            logger.debug(f"VLM raw response: {json.dumps(result, indent=2)[:500]}...")
 
             # Validate and structure the result
             structured_result = self._validate_step_detection(result, manual_id)
@@ -111,7 +138,13 @@ class DirectStepAnalyzer:
                 "error": str(e)
             }
 
-    def _build_step_detection_prompt(self, manual_id: str) -> str:
+    def _build_step_detection_prompt(
+        self,
+        manual_id: str,
+        has_reference_images: bool = False,
+        num_user_images: int = 1,
+        detected_parts: Optional[List[Dict[str, Any]]] = None
+    ) -> str:
         """
         Build VLM prompt for direct step detection.
 
@@ -120,6 +153,9 @@ class DirectStepAnalyzer:
 
         Args:
             manual_id: Manual identifier
+            has_reference_images: Whether reference images are included
+            num_user_images: Number of user assembly images
+            detected_parts: Optional list of detected parts to include in prompt
 
         Returns:
             Formatted prompt string with manual steps context
@@ -135,14 +171,22 @@ class DirectStepAnalyzer:
             nodes = dependencies.get("nodes", {})
             total_steps = len(nodes)
 
-            # Format manual steps for VLM
-            manual_steps_context = self._format_manual_steps(nodes)
+            # Format manual steps with cumulative parts for VLM
+            manual_steps_context = self._format_manual_steps_with_parts(nodes)
+
+        # Format detected parts if available
+        detected_parts_text = ""
+        if detected_parts:
+            detected_parts_text = self._format_detected_parts(detected_parts)
 
         # Use PromptManager to load the direct_step_detection prompt template
         prompt_context = {
             'manual_id': manual_id,
             'total_steps': str(total_steps),
-            'manual_steps_context': manual_steps_context
+            'manual_steps_context': manual_steps_context,
+            'has_reference_images': 'yes' if has_reference_images else 'no',
+            'num_user_images': str(num_user_images),
+            'detected_parts_section': detected_parts_text
         }
 
         prompt = self.prompt_manager.get_prompt(
@@ -151,6 +195,88 @@ class DirectStepAnalyzer:
         )
 
         return prompt
+
+    def _format_detected_parts(self, detected_parts: List[Dict[str, Any]]) -> str:
+        """
+        Format detected parts into readable text for VLM prompt.
+
+        Args:
+            detected_parts: List of parts detected by StateAnalyzer
+
+        Returns:
+            Formatted string describing detected parts
+        """
+        if not detected_parts:
+            return ""
+
+        parts_lines = ["\nDETECTED PARTS FROM USER'S ASSEMBLY:"]
+        for i, part in enumerate(detected_parts, 1):
+            color = part.get("color", "unknown")
+            shape = part.get("shape", "unknown")
+            desc = part.get("description", "")
+            qty = part.get("quantity", 1)
+
+            part_text = f"{i}. {qty}x {color} {shape}"
+            if desc and desc not in shape:
+                part_text += f" ({desc})"
+            parts_lines.append(part_text)
+
+        parts_lines.append("")  # blank line
+        return "\n".join(parts_lines)
+
+    def _format_manual_steps_with_parts(self, nodes: Dict[str, Any]) -> str:
+        """
+        Format manual steps with cumulative parts information for VLM.
+
+        Args:
+            nodes: Dictionary of step nodes from dependencies.json
+
+        Returns:
+            Formatted string describing each step with cumulative parts
+        """
+        # Sort steps by step_number
+        sorted_steps = sorted(
+            nodes.items(),
+            key=lambda x: x[1].get('step_number', 0)
+        )
+
+        formatted_steps = []
+
+        for step_id, step_data in sorted_steps:
+            step_num = step_data.get('step_number', '?')
+            parts = step_data.get('parts_required', [])
+            cumulative_parts = step_data.get('cumulative_parts', [])
+            actions = step_data.get('actions', [])
+            existing = step_data.get('existing_assembly', '')
+
+            # Format parts added in this step
+            parts_list = []
+            for part in parts:
+                qty = part.get('quantity', 1)
+                color = part.get('color', '')
+                desc = part.get('description', '')
+                parts_list.append(f"{qty}x {color} {desc}".strip())
+
+            parts_text = ", ".join(parts_list) if parts_list else "no new parts"
+
+            # Get action verb
+            action = actions[0].get('action_verb', 'attach') if actions else 'attach'
+
+            # Build step description
+            step_desc = f"Step {step_num}: {action} {parts_text}"
+
+            # Add existing assembly context if available
+            if existing and existing != "null":
+                step_desc += f" (building on: {existing})"
+
+            # Add cumulative parts count
+            if cumulative_parts:
+                total_parts = sum(p.get('quantity', 1) for p in cumulative_parts)
+                step_desc += f" [Total parts up to this step: {total_parts}]"
+
+            formatted_steps.append(step_desc)
+
+        return "\n".join(formatted_steps)
 
     def _load_dependencies(self, manual_id: str) -> Optional[Dict[str, Any]]:
         """
@@ -166,10 +292,13 @@ class DirectStepAnalyzer:
             from ..config import get_settings
             settings = get_settings()
 
+            # settings.output_dir is now guaranteed to be an absolute path
             dependencies_path = Path(settings.output_dir) / manual_id / f"{manual_id}_dependencies.json"
 
+            logger.debug(f"Looking for dependencies at: {dependencies_path}")
+
             if not dependencies_path.exists():
-                logger.warning(f"Dependencies file not found: {dependencies_path}")
+                logger.error(f"Dependencies file not found: {dependencies_path}")
                 return None
 
             with open(dependencies_path, 'r', encoding='utf-8') as f:
@@ -181,6 +310,52 @@ class DirectStepAnalyzer:
         except Exception as e:
             logger.error(f"Error loading dependencies for {manual_id}: {e}")
             return None
+
+    def _load_reference_images(self, manual_id: str, max_images: int = 20) -> List[str]:
+        """
+        Load reference step images from the manual.
+
+        Args:
+            manual_id: Manual identifier
+            max_images: Maximum number of reference images to load
+
+        Returns:
+            List of paths to reference step images
+        """
+        try:
+            from ..config import get_settings
+            settings = get_settings()
+
+            # settings.output_dir is now guaranteed to be an absolute path
+            # Reference images are stored in output/temp_pages/{manual_id}/
+            images_dir = Path(settings.output_dir) / "temp_pages" / manual_id
+
+            logger.debug(f"Looking for reference images in: {images_dir}")
+            logger.debug(f"settings.output_dir: {settings.output_dir}")
+
+            if not images_dir.exists():
+                logger.error(f"Reference images directory not found: {images_dir}")
+                return []
+
+            # Get all page images, sorted by name
+            image_files = sorted(images_dir.glob("page_*.png"))
+
+            if not image_files:
+                logger.warning(f"No reference images found in {images_dir}")
+                return []
+
+            # Limit to max_images
+            selected_images = image_files[:max_images]
+
+            # Convert to absolute paths as strings
+            reference_paths = [str(img.absolute()) for img in selected_images]
+
+            logger.info(f"Found {len(reference_paths)} reference images for manual {manual_id}")
+            return reference_paths
+
+        except Exception as e:
+            logger.error(f"Error loading reference images for {manual_id}: {e}")
+            return []
 
     def _format_manual_steps(self, nodes: Dict[str, Any]) -> str:
         """
